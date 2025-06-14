@@ -3,6 +3,7 @@ flet>=0.24.1
 
 # Database
 mysql-connector-python>=8.2.0
+PyMySQL>=1.0.2
 
 # PDF Processing
 PyPDF2>=3.0.1

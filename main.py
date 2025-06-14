@@ -20,8 +20,25 @@ from database.db_manager import DatabaseManager
 
 class ATSFrontend:
     def __init__(self):
-        # Initialize database manager using SQLite
-        self.db = DatabaseManager()  # defaults to SQLite ats.db
+        # Initialize database manager using MySQL/MariaDB
+        print("🔗 Connecting to MySQL/MariaDB database...")
+        
+        try:
+            self.db = DatabaseManager(
+                host="localhost",
+                port=3306,
+                user="root", 
+                password="root",  # Temporary hardcoded password
+                database="ats_database"
+            )
+            print("✅ Successfully connected to MySQL/MariaDB database!")
+        except Exception as e:
+            print(f"❌ Failed to connect to MySQL/MariaDB: {e}")
+            print("Please ensure:")
+            print("  1. MariaDB/MySQL server is running")
+            print("  2. Root password is set to 'root' (or update the password in db_manager.py)")
+            print("  3. Database server is accessible on localhost:3306")
+            raise e
         self.db.create_tables()
         
         # Load extracted CV data if available
@@ -236,6 +253,42 @@ class ATSFrontend:
             )
         )
 
+        # SQL Import Components
+        self.sql_files_dropdown = ft.Dropdown(
+            width=400,
+            label="Pilih file .sql untuk import data",
+            options=[],
+            border_radius=10,
+            border_color=ft.Colors.GREEN_400,
+            focused_border_color=ft.Colors.GREEN_600,
+        )
+        
+        self.import_sql_button = ft.ElevatedButton(
+            text="📥 Import Data dari SQL",
+            on_click=self.import_sql_data,
+            style=ft.ButtonStyle(
+                color=ft.Colors.WHITE,
+                bgcolor={"": ft.Colors.GREEN_600, "hovered": ft.Colors.GREEN_700},
+                padding=ft.padding.symmetric(horizontal=25, vertical=15),
+                shape=ft.RoundedRectangleBorder(radius=10),
+            ),
+            width=200
+        )
+        
+        self.refresh_sql_button = ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            tooltip="Refresh daftar file SQL",
+            on_click=self.refresh_sql_files,
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.GREEN_100,
+                color=ft.Colors.GREEN_600,
+                shape=ft.CircleBorder(),
+            )
+        )
+        
+        # Populate SQL files dropdown
+        self.refresh_sql_files()
+        
         self.home_view = self.create_home_view()
         self.summary_view = ft.Container(visible=False)
 
@@ -354,8 +407,7 @@ class ATSFrontend:
                                 ft.Text("Klik tombol di atas untuk memulai proses pencarian",
                                        size=12, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER)
                             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
-                            margin=ft.margin.only(top=30)
-                        )
+                            margin=ft.margin.only(top=30)                        )
                     ], spacing=15),
                     padding=30,
                     border=ft.border.all(2, ft.Colors.INDIGO_200),
@@ -367,6 +419,42 @@ class ATSFrontend:
                         color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900),
                         offset=ft.Offset(0, 5)
                     )
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text("📥 Import Data dari SQL", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_600)
+                        ]),
+                        ft.Divider(thickness=2, color=ft.Colors.GREEN_200),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text("Pilih file .sql dari direktori data/ untuk mengimpor data profil:", size=16, weight=ft.FontWeight.W_500),
+                                ft.Row([
+                                    self.sql_files_dropdown,
+                                    self.refresh_sql_button
+                                ], spacing=10),
+                                ft.Text("File seed_data.sql berisi data profil aplikan yang dapat diimpor ke database MySQL",
+                                       size=12, color=ft.Colors.GREY_600, italic=True),
+                                ft.Container(
+                                    content=self.import_sql_button,
+                                    margin=ft.margin.only(top=15),
+                                    alignment=ft.alignment.center
+                                )
+                            ], spacing=10),
+                            margin=ft.margin.only(bottom=20)
+                        )
+                    ], spacing=15),
+                    padding=30,
+                    border=ft.border.all(2, ft.Colors.GREEN_200),
+                    border_radius=20,
+                    bgcolor=ft.Colors.with_opacity(0.7, ft.Colors.GREEN_50),
+                    shadow=ft.BoxShadow(
+                        spread_radius=1,
+                        blur_radius=15,
+                        color=ft.Colors.with_opacity(0.2, ft.Colors.GREEN_900),
+                        offset=ft.Offset(0, 5)
+                    ),
+                    margin=ft.margin.only(top=30)
                 ),
                 ft.Container(
                     content=ft.Row([
@@ -1095,8 +1183,7 @@ class ATSFrontend:
                 ),
                 elevation=2,
                 shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.BLUE_900)
-            ),
-        ], scroll=ft.ScrollMode.AUTO, spacing=20)
+            ),        ], scroll=ft.ScrollMode.AUTO, spacing=20)
 
         self.home_view.visible = False
         self.summary_view = ft.Container(
@@ -1113,16 +1200,65 @@ class ATSFrontend:
         import subprocess
         import platform
         cv_path = cv_data.get('cv_path', '')
-        if os.path.exists(cv_path):
-            if platform.system() == "Windows":
-                os.startfile(cv_path)
-            elif platform.system() == "Darwin":
-                subprocess.call(["open", cv_path])
-            else:
-                subprocess.call(["xdg-open", cv_path])
-            self.show_snackbar(f"📄 Membuka file CV: {cv_path}", ft.Colors.INDIGO_600)
+        
+        print(f"🔍 Debug - Attempting to open CV:")
+        print(f"   Original cv_path: {cv_path}")
+        print(f"   CV ID: {cv_data.get('cv_id', 'N/A')}")
+        print(f"   Category: {cv_data.get('category', 'N/A')}")
+        
+        # Convert relative path to absolute path
+        if cv_path and not os.path.isabs(cv_path):
+            cv_path = os.path.abspath(cv_path)
+            print(f"   Absolute cv_path: {cv_path}")
+        
+        if cv_path and os.path.exists(cv_path):
+            try:
+                print(f"   ✅ File exists, attempting to open: {cv_path}")
+                if platform.system() == "Windows":
+                    os.startfile(cv_path)
+                elif platform.system() == "Darwin":
+                    subprocess.call(["open", cv_path])
+                else:
+                    subprocess.call(["xdg-open", cv_path])
+                self.show_snackbar(f"📄 Membuka file CV: {os.path.basename(cv_path)}", ft.Colors.INDIGO_600)
+            except Exception as e:
+                print(f"   ❌ Error opening file: {str(e)}")
+                self.show_snackbar(f"❌ Gagal membuka file CV: {str(e)}", ft.Colors.RED_600)
         else:
-            self.show_snackbar(f"❌ File CV tidak ditemukan: {cv_path}", ft.Colors.RED_600)
+            print(f"   ❌ File not found at: {cv_path}")
+            # Try to find the file by CV ID if path doesn't exist
+            cv_id = cv_data.get('cv_id', '')
+            category = cv_data.get('category', '')
+            if cv_id and category:
+                # Try alternative paths
+                possible_paths = [
+                    f"data/cv/{category}/{cv_id}.pdf",
+                    f"data/cv/{category.upper()}/{cv_id}.pdf",
+                    f"data/cv/{category.lower()}/{cv_id}.pdf"
+                ]
+                
+                print(f"   🔄 Trying alternative paths for CV ID {cv_id}:")
+                for possible_path in possible_paths:
+                    abs_path = os.path.abspath(possible_path)
+                    print(f"      Checking: {abs_path}")
+                    if os.path.exists(abs_path):
+                        try:
+                            print(f"      ✅ Found file, attempting to open: {abs_path}")
+                            if platform.system() == "Windows":
+                                os.startfile(abs_path)
+                            elif platform.system() == "Darwin":
+                                subprocess.call(["open", abs_path])
+                            else:
+                                subprocess.call(["xdg-open", abs_path])
+                            self.show_snackbar(f"📄 Membuka file CV: {os.path.basename(abs_path)}", ft.Colors.INDIGO_600)
+                            return
+                        except Exception as e:
+                            print(f"      ❌ Error opening alternative path: {str(e)}")
+                            continue
+                    else:
+                        print(f"      ❌ Not found: {abs_path}")
+            
+            self.show_snackbar(f"❌ File CV tidak ditemukan: {cv_path or 'Path tidak tersedia'}", ft.Colors.RED_600)
 
     def go_to_home(self, e=None):
         self.home_view.visible = True
@@ -1142,6 +1278,69 @@ class ATSFrontend:
         )
         self.page.snack_bar.open = True
         self.page.update()
+
+    def import_sql_data(self, e):
+        # Get selected SQL file
+        sql_file = self.sql_files_dropdown.value
+        if not sql_file:
+            self.show_snackbar("⚠️ Mohon pilih file .sql yang akan diimpor!", ft.Colors.ORANGE_600)
+            return        # Confirm import action
+        def on_confirm_import(e):
+            if e.control.checked:
+                # Execute SQL import
+                try:
+                    self.db.import_sql_file(sql_file)
+                    
+                    # Also import extracted CV data if available
+                    extracted_cv_file = "data/extracted_cvs.csv"
+                    if os.path.exists(extracted_cv_file):
+                        print(f"🔄 Also importing extracted CV data from {extracted_cv_file}...")
+                        self.db.import_extracted_cv_data(extracted_cv_file)
+                        self.show_snackbar(f"✅ Data berhasil diimpor dari {sql_file} dan extracted CV data", ft.Colors.GREEN_600)
+                    else:
+                        self.show_snackbar(f"✅ Data berhasil diimpor dari {sql_file}", ft.Colors.GREEN_600)
+                        
+                    self.refresh_sql_files()
+                except Exception as ex:
+                    self.show_snackbar(f"❌ Gagal mengimpor data: {str(ex)}", ft.Colors.RED_600)
+                    print(f"SQL import error: {ex}")
+                    print(f"Traceback: {traceback.format_exc()}")
+                finally:
+                    e.control.checked = False
+                    self.page.update()
+
+        # Show confirmation dialog
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Text("Konfirmasi Impor Data SQL"),
+            content=ft.Text(f"Apakah Anda yakin ingin mengimpor data dari file ini: {sql_file}?",
+                            size=14, color=ft.Colors.GREY_800),
+            actions=[
+                ft.TextButton("Batal", on_click=lambda e: self.page.dialog.close()),
+                ft.TextButton("Ya, Impor", on_click=on_confirm_import),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            modal=True        )
+        self.page.dialog.open = True
+        self.page.update()
+
+    def refresh_sql_files(self, e=None):
+        # List all .sql files in the data directory
+        data_dir = "data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+
+        sql_files = []
+        for file in os.listdir(data_dir):
+            if file.endswith('.sql'):
+                sql_files.append(os.path.join(data_dir, file))
+
+        options = [ft.dropdown.Option(f, os.path.basename(f)) for f in sql_files]
+
+        self.sql_files_dropdown.options = options
+        self.sql_files_dropdown.value = sql_files[0] if sql_files else None
+
+        if self.page:
+            self.page.update()
 
 def main(page: ft.Page):
     app = ATSFrontend()
