@@ -1,8 +1,22 @@
+import sys
+import os
 import flet as ft
 import time
+import math
 import random
 from typing import List, Dict
-import math
+
+# Pastikan src ada di sys.path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from algorithms.kmp import KMPSearch
+from algorithms.bm import BoyerMooreSearch
+from algorithms.aho_corasick import AhoCorasickSearch
+from algorithms.levenshtein import LevenshteinDistance
+from algorithms.encryption import DataEncryption
+from database.db_manager import DatabaseManager
+from utils.pdf_extractor import PDFExtractor
+from utils.regex_extractor import RegexExtractor
 
 class ATSFrontend:
     def __init__(self):
@@ -11,7 +25,16 @@ class ATSFrontend:
         self.selected_cv = None
         self.current_pagination_page = 1
         self.results_per_page = 5
-        
+
+        # Backend
+        self.db_manager = DatabaseManager()
+        self.kmp_search = KMPSearch()
+        self.bm_search = BoyerMooreSearch()
+        self.ac_search = AhoCorasickSearch()
+        self.levenshtein = LevenshteinDistance()
+        self.pdf_extractor = PDFExtractor()
+        self.regex_extractor = RegexExtractor()
+
     def main(self, page: ft.Page):
         page.title = "ATS - Applicant Tracking System"
         page.theme_mode = ft.ThemeMode.LIGHT
@@ -20,15 +43,15 @@ class ATSFrontend:
         page.window_resizable = True
         page.padding = 0
         page.scroll = ft.ScrollMode.AUTO
-        
+
         page.theme = ft.Theme(
             color_scheme_seed=ft.Colors.INDIGO,
             visual_density=ft.VisualDensity.COMFORTABLE,
         )
-        
+
         self.page = page
         self.init_components()
-        
+
         # Main container
         self.main_container = ft.Container(
             content=ft.Column([
@@ -39,12 +62,11 @@ class ATSFrontend:
             padding=20,
             expand=True
         )
-        
+
         page.add(self.main_container)
         page.update()
-    
+
     def init_components(self):
-        # Input pencarian
         self.keyword_input = ft.TextField(
             label="Masukkan kata kunci pencarian",
             hint_text="Contoh: React, Express, HTML",
@@ -55,8 +77,7 @@ class ATSFrontend:
             border_color=ft.Colors.INDIGO_400,
             focused_border_color=ft.Colors.INDIGO_600,
         )
-        
-        # Toggle button untuk algoritma
+
         self.algorithm_radio = ft.RadioGroup(
             content=ft.Row([
                 ft.Container(
@@ -74,7 +95,6 @@ class ATSFrontend:
             ], spacing=10),
             value="KMP"
         )
-        # Top Matches Selector
         self.top_matches_dropdown = ft.Dropdown(
             width=250,
             options=[
@@ -90,13 +110,12 @@ class ATSFrontend:
             border_color=ft.Colors.INDIGO_400,
             focused_border_color=ft.Colors.INDIGO_600,
         )
-        
-        # Search Button 
+
         self.search_button = ft.Container(
             content=ft.ElevatedButton(
                 content=ft.Row([
                     ft.Text("🔍 Mulai Pencarian CV", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
-                ], 
+                ],
                 alignment=ft.MainAxisAlignment.CENTER,
                 spacing=10),
                 on_click=self.search_cv,
@@ -114,14 +133,14 @@ class ATSFrontend:
                 width=250,
                 height=70
             ),
-             gradient=ft.LinearGradient(
+            gradient=ft.LinearGradient(
                 begin=ft.alignment.top_left,
                 end=ft.alignment.bottom_right,
                 colors=[
-                    ft.Colors.BLUE_900,         
-                    ft.Colors.INDIGO_900,           
-                    ft.Colors.BLUE_900,        
-                    ft.Colors.INDIGO_900,     
+                    ft.Colors.BLUE_900,
+                    ft.Colors.INDIGO_900,
+                    ft.Colors.BLUE_900,
+                    ft.Colors.INDIGO_900,
                 ]
             ),
             border_radius=15,
@@ -134,7 +153,7 @@ class ATSFrontend:
             animate=ft.Animation(300, ft.AnimationCurve.EASE_IN_OUT),
             on_hover=self.on_button_hover,
         )
-        
+
         self.loading_indicator = ft.ProgressRing(
             width=30,
             height=30,
@@ -142,8 +161,7 @@ class ATSFrontend:
             color=ft.Colors.INDIGO_400,
             visible=False
         )
-        
-        # Section Summary Result 
+
         self.summary_result_section = ft.Container(
             content=ft.Column([
                 ft.Text("📊 Summary Result Section", size=18, weight=ft.FontWeight.BOLD),
@@ -163,14 +181,12 @@ class ATSFrontend:
                 offset=ft.Offset(0, 4)
             )
         )
-        
-        # Results container
+
         self.results_container = ft.Column(
             spacing=15,
             scroll=ft.ScrollMode.AUTO
         )
-        
-        # Pagination container
+
         self.pagination_container = ft.Container(
             content=ft.Row(
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -179,8 +195,7 @@ class ATSFrontend:
             padding=20,
             visible=False
         )
-        
-        # Tombol back ke home
+
         self.header_back_button = ft.IconButton(
             icon=ft.Icons.HOME,
             tooltip="Kembali ke Beranda",
@@ -193,12 +208,12 @@ class ATSFrontend:
                 shape=ft.CircleBorder(),
             )
         )
-        
+
         self.home_view = self.create_home_view()
         self.summary_view = ft.Container(visible=False)
-    
+
     def on_button_hover(self, e):
-        if e.data == "true": 
+        if e.data == "true":
             e.control.shadow = ft.BoxShadow(
                 spread_radius=3,
                 blur_radius=20,
@@ -206,7 +221,7 @@ class ATSFrontend:
                 offset=ft.Offset(0, 8)
             )
             e.control.scale = 1.02
-        else:  
+        else:
             e.control.shadow = ft.BoxShadow(
                 spread_radius=2,
                 blur_radius=15,
@@ -215,7 +230,7 @@ class ATSFrontend:
             )
             e.control.scale = 1.0
         e.control.update()
-    
+
     def create_header(self):
         return ft.Container(
             content=ft.Column([
@@ -259,7 +274,7 @@ class ATSFrontend:
             ),
             border=ft.border.only(bottom=ft.BorderSide(3, ft.Colors.INDIGO_200))
         )
-    
+
     def create_home_view(self):
         return ft.Container(
             content=ft.Column([
@@ -269,19 +284,15 @@ class ATSFrontend:
                             ft.Text("📃 Pencarian CV", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.INDIGO_600)
                         ]),
                         ft.Divider(thickness=2, color=ft.Colors.INDIGO_200),
-                        
-                        # Kolom input kata kunci
                         ft.Container(
                             content=ft.Column([
                                 ft.Text("Kata Kunci Pencarian:", size=16, weight=ft.FontWeight.W_500),
                                 self.keyword_input,
-                                ft.Text("Untuk multiple keywords pisahkan dengan tanda koma (contoh: React, HTML, Javascript)", 
+                                ft.Text("Untuk multiple keywords pisahkan dengan tanda koma (contoh: React, HTML, Javascript)",
                                        size=12, color=ft.Colors.GREY_600, italic=True)
                             ], spacing=8),
                             margin=ft.margin.only(bottom=25)
                         ),
-                        
-                        # Tombol toggle algoritma dan Top Matches Selector
                         ft.Row([
                             ft.Container(
                                 content=ft.Column([
@@ -296,9 +307,7 @@ class ATSFrontend:
                                 ], spacing=8),
                                 expand=1
                             ),
-                            
                             ft.VerticalDivider(width=30, color=ft.Colors.INDIGO_100),
-                            
                             ft.Container(
                                 content=ft.Column([
                                     ft.Text("Jumlah CV yang Ditampilkan:", size=16, weight=ft.FontWeight.W_500),
@@ -307,15 +316,13 @@ class ATSFrontend:
                                 expand=1
                             )
                         ], spacing=20),
-                        
-                        # Search Button
                         ft.Container(
                             content=ft.Column([
                                 ft.Row([
                                     self.search_button,
                                     self.loading_indicator
                                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=20),
-                                ft.Text("Klik tombol di atas untuk memulai proses pencarian", 
+                                ft.Text("Klik tombol di atas untuk memulai proses pencarian",
                                        size=12, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER)
                             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
                             margin=ft.margin.only(top=30)
@@ -332,22 +339,18 @@ class ATSFrontend:
                         offset=ft.Offset(0, 5)
                     )
                 ),
-                
-                # Section summary result
                 ft.Container(
                     content=ft.Row([
                         self.summary_result_section
                     ], alignment=ft.MainAxisAlignment.CENTER),
                     margin=ft.margin.only(top=30)
                 ),
-                
-                # Container untuk hasil pencarian 
                 ft.Container(
                     content=ft.Column([
                         ft.Row([
                             ft.Text("📋 Hasil Pencarian CV", size=22, weight=ft.FontWeight.BOLD),
                         ]),
-                        ft.Text("Kartu CV akan menampilkan nama kandidat, jumlah kecocokan, dan frekuensi keyword", 
+                        ft.Text("Kartu CV akan menampilkan nama kandidat, jumlah kecocokan, dan frekuensi keyword",
                                size=14, color=ft.Colors.GREY_600),
                         ft.Divider(thickness=2, color=ft.Colors.INDIGO_200),
                         self.results_container,
@@ -368,13 +371,12 @@ class ATSFrontend:
             ], spacing=20, scroll=ft.ScrollMode.AUTO),
             visible=True
         )
-    
+
     def search_cv(self, e):
         if not self.keyword_input.value:
             self.show_snackbar("⚠️ Mohon masukkan kata kunci untuk pencarian!", ft.Colors.ORANGE_600)
             return
-        
-        # Show loading
+
         self.loading_indicator.visible = True
         self.search_button.content.content = ft.Row([
             ft.Icon(ft.Icons.HOURGLASS_EMPTY, color=ft.Colors.WHITE, size=24),
@@ -382,44 +384,122 @@ class ATSFrontend:
         ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
         self.search_button.content.disabled = True
         self.page.update()
-        
-        time.sleep(1)
-        
+
         try:
-            keywords = [k.strip() for k in self.keyword_input.value.split(",")]
+            keywords = [k.strip() for k in self.keyword_input.value.split(",") if k.strip()]
             algorithm = self.algorithm_radio.value
             top_matches = self.top_matches_dropdown.value
-            
-            all_results = self.generate_realistic_results(keywords)
-            
-            # Sort dari paling match ke tidak match
+
+            # Ambil semua data CV dari database
+            cv_data = self.db_manager.get_all_cvs()
+            if not cv_data:
+                self.show_snackbar("⚠️ Tidak ada CV dalam database. Silakan upload CV terlebih dahulu.", ft.Colors.ORANGE_600)
+                return
+
+            start_time = time.time()
+            all_results = []
+            for cv in cv_data:
+                cv_path = os.path.join("data", cv["cv_path"])
+                cv_text = self.pdf_extractor.extract_text(cv_path)
+                matches = {}
+                total_matches = 0
+
+                if not cv_text:
+                    all_results.append({
+                        'cv_data': {
+                            'name': f"{cv['first_name']} {cv['last_name']}",
+                            'position': cv['application_role'],
+                            'company': "Unknown",
+                            'skills': []
+                        },
+                        'matches': {},
+                        'match_count': 0,
+                        'match_type': 'no_match',
+                        'similarity_score': 0.0
+                    })
+                    continue
+
+                cv_text_lower = cv_text.lower()
+                keywords_lower = [k.lower() for k in keywords]
+
+                # --- Exact match ---
+                if algorithm == "AC":
+                    ac_result = self.ac_search.search_multiple(cv_text_lower, keywords_lower)
+                    for kw in keywords_lower:
+                        count = len(ac_result.get(kw, []))
+                        if count > 0:
+                            matches[kw] = count
+                            total_matches += count
+                else:
+                    for keyword_lower in keywords_lower:
+                        if algorithm == "KMP":
+                            match_positions = self.kmp_search.search_all(cv_text_lower, keyword_lower)
+                        elif algorithm == "BM":
+                            match_positions = self.bm_search.search_all(cv_text_lower, keyword_lower)
+                        else:
+                            match_positions = self.kmp_search.search_all(cv_text_lower, keyword_lower)
+                        if match_positions:
+                            matches[keyword_lower] = len(match_positions)
+                            total_matches += len(match_positions)
+
+                # --- Fuzzy match (Levenshtein) jika tidak ada exact match ---
+                fuzzy_matches = {}
+                fuzzy_total = 0
+                if total_matches == 0:
+                    # Split seluruh teks CV menjadi kata-kata unik
+                    words = set(cv_text_lower.split())
+                    for keyword_lower in keywords_lower:
+                        for word in words:
+                            if len(word) >= 3:
+                                similarity = self.levenshtein.similarity(keyword_lower, word)
+                                if similarity >= 0.7:
+                                    fuzzy_matches[keyword_lower] = fuzzy_matches.get(keyword_lower, 0) + 1
+                                    fuzzy_total += 1
+
+                # Gabungkan hasil
+                if total_matches > 0:
+                    match_type = 'exact'
+                    similarity_score = min(1.0, total_matches / len(keywords))
+                elif fuzzy_total > 0:
+                    match_type = 'fuzzy'
+                    similarity_score = min(1.0, fuzzy_total / len(keywords))
+                    matches = fuzzy_matches
+                    total_matches = fuzzy_total
+                else:
+                    match_type = 'no_match'
+                    similarity_score = 0.0
+
+                all_results.append({
+                    'cv_data': {
+                        'name': f"{cv['first_name']} {cv['last_name']}",
+                        'position': cv['application_role'],
+                        'company': "Unknown",
+                        'skills': self.regex_extractor.extract_skills(cv_text)
+                    },
+                    'matches': matches,
+                    'match_count': total_matches,
+                    'match_type': match_type,
+                    'similarity_score': similarity_score
+                })
+
+            exact_time = (time.time() - start_time) * 1000
+
+            # Sort dan filter hasil
             all_results.sort(key=lambda x: x['match_count'], reverse=True)
-            
-            # Filter berdasarkan top matches
             if top_matches == "all":
                 self.search_results = all_results
             else:
                 self.search_results = all_results[:int(top_matches)]
-            
+
             matching_count = len([r for r in self.search_results if r['match_count'] > 0])
-            
-            # Reset pagination
             self.current_pagination_page = 1
-            
-            # MOCK DUMMY
             total_cvs = len(all_results)
-            exact_time = random.uniform(80, 250)
-            fuzzy_time = random.uniform(120, 350)
-            
-            # Update Summary Result Section 
+            fuzzy_time = 0
+
             self.update_summary_result_section(total_cvs, exact_time, fuzzy_time, algorithm)
-            
-            # Update results 
             self.update_results_display()
-            
-            matching_cvs = len([r for r in self.search_results if r['match_count'] > 0])
-            self.show_snackbar(f"✅ Pencarian selesai! Ditemukan {matching_cvs} CV relevan dari {total_cvs} total CV", ft.Colors.GREEN_600)
-            
+            self.show_snackbar(f"✅ Pencarian selesai! Ditemukan {matching_count} CV relevan dari {total_cvs} total CV", ft.Colors.GREEN_600)
+
         except Exception as ex:
             self.show_snackbar(f"❌ Error dalam pencarian: {str(ex)}", ft.Colors.RED_600)
         finally:
@@ -429,73 +509,11 @@ class ATSFrontend:
                 ft.Text("🔍 Mulai Pencarian CV", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
             self.page.update()
-    
-    def generate_realistic_results(self, keywords: List[str]) -> List[Dict]:
-        """Generate realistic CV results dengan skills yang sesuai keywords"""
-        
-        # Database DUMMY
-        mock_cvs = [
-            {"name": "Ahmad Rizki", "position": "Software Engineer", "company": "Tech Corp", 
-             "skills": ["Python", "React", "JavaScript", "HTML", "CSS", "Git"]},
-            {"name": "Sari Dewi", "position": "Data Scientist", "company": "Analytics Inc",
-             "skills": ["Python", "SQL", "Machine Learning", "Pandas", "NumPy"]},
-            {"name": "Budi Santoso", "position": "Frontend Developer", "company": "Web Solutions",
-             "skills": ["React", "Vue.js", "JavaScript", "HTML", "CSS", "TypeScript"]},
-            {"name": "Maya Putri", "position": "UI/UX Designer", "company": "Design Studio",
-             "skills": ["Figma", "Adobe XD", "HTML", "CSS", "Prototyping"]},
-            {"name": "Andi Pratama", "position": "Backend Developer", "company": "Server Systems",
-             "skills": ["Node.js", "Express", "MongoDB", "Python", "Django"]},
-            {"name": "Lisa Chen", "position": "Product Manager", "company": "Innovation Labs",
-             "skills": ["Product Management", "Agile", "Scrum", "Analytics"]},
-            {"name": "Rudi Hermawan", "position": "DevOps Engineer", "company": "Cloud Services",
-             "skills": ["Docker", "Kubernetes", "AWS", "Linux", "Python"]},
-            {"name": "Nina Sari", "position": "Mobile Developer", "company": "App Factory",
-             "skills": ["React Native", "Flutter", "JavaScript", "Dart"]},
-            {"name": "Doni Wijaya", "position": "Machine Learning Engineer", "company": "AI Solutions",
-             "skills": ["Python", "TensorFlow", "PyTorch", "Machine Learning", "SQL"]},
-            {"name": "Eka Putri", "position": "Quality Assurance", "company": "Testing Corp",
-             "skills": ["Testing", "Selenium", "Python", "Java", "Automation"]}
-        ]
-        
-        results = []
-        for cv in mock_cvs:
-            matches = {}
-            total_matches = 0
-            
-            # Check untuk keyword
-            for keyword in keywords:
-                keyword_lower = keyword.lower().strip()
-                match_count = 0
-                
-                for skill in cv["skills"]:
-                    if keyword_lower in skill.lower():
-                        match_count += 1
-                
-                if keyword_lower in cv["position"].lower():
-                    match_count += 1
-                if keyword_lower in cv["company"].lower():
-                    match_count += 1
-                
-                if match_count > 0:
-                    matches[keyword_lower] = match_count
-                    total_matches += match_count
-            
-            results.append({
-                'cv_data': cv,
-                'matches': matches,
-                'match_count': total_matches,
-                'match_type': 'exact' if total_matches > 0 else 'no_match',
-                'similarity_score': min(1.0, total_matches / len(keywords)) if total_matches > 0 else 0.0
-            })
-        
-        matching_results = [r for r in results if r['match_count'] > 0]
-        
-        return results
-    
+
     def update_summary_result_section(self, total_cvs: int, exact_time: float, fuzzy_time: float, algorithm: str):
         exact_match_text = f"Exact Match: {total_cvs} CVs scanned in {exact_time:.0f}ms"
         fuzzy_match_text = f"Fuzzy Match: {total_cvs} CVs scanned in {fuzzy_time:.0f}ms"
-        
+
         self.summary_result_section.content = ft.Column([
             ft.Text("📊 Summary Result Section", size=18, weight=ft.FontWeight.BOLD),
             ft.Divider(color=ft.Colors.INDIGO_200),
@@ -508,32 +526,22 @@ class ATSFrontend:
             ], spacing=8)
         ])
         self.summary_result_section.visible = True
-    
+
     def get_paginated_results(self):
-        """Get results for current pagination page"""
-        # Filter results yang memiliki matches
         filtered_results = [r for r in self.search_results if r['match_count'] > 0]
-        
-        # Jika "Tampilkan Semua" dipilih, tampilkan semua CV dari yang paling match hingga tidak
         if self.top_matches_dropdown.value == "all":
             filtered_results = self.search_results
-        
         start_idx = (self.current_pagination_page - 1) * self.results_per_page
         end_idx = start_idx + self.results_per_page
-        
         return filtered_results[start_idx:end_idx], len(filtered_results)
-    
+
     def update_pagination(self, total_results: int):
-        """Update pagination controls"""
         total_pages = math.ceil(total_results / self.results_per_page)
-        
         if total_pages <= 1:
             self.pagination_container.visible = False
             return
-        
+
         pagination_controls = []
-        
-        # Previous button
         prev_button = ft.ElevatedButton(
             text="← Sebelumnya",
             on_click=self.prev_page,
@@ -546,14 +554,13 @@ class ATSFrontend:
             )
         )
         pagination_controls.append(prev_button)
-        
-        # Page number
+
         start_page = max(1, self.current_pagination_page - 2)
         end_page = min(total_pages, start_page + 4)
-        
+
         if start_page > 1:
             pagination_controls.append(ft.Text("...", color=ft.Colors.GREY_500))
-        
+
         for page_num in range(start_page, end_page + 1):
             page_button = ft.ElevatedButton(
                 text=str(page_num),
@@ -567,11 +574,10 @@ class ATSFrontend:
                 width=50
             )
             pagination_controls.append(page_button)
-        
+
         if end_page < total_pages:
             pagination_controls.append(ft.Text("...", color=ft.Colors.GREY_500))
-        
-        # Next button
+
         next_button = ft.ElevatedButton(
             text="Selanjutnya →",
             on_click=self.next_page,
@@ -584,48 +590,46 @@ class ATSFrontend:
             )
         )
         pagination_controls.append(next_button)
-        
-        # Page info
+
         page_info = ft.Text(
             f"Halaman {self.current_pagination_page} dari {total_pages} ({total_results} CV)",
             size=14,
             color=ft.Colors.GREY_600
         )
-        
+
         self.pagination_container.content = ft.Column([
             ft.Row(pagination_controls, alignment=ft.MainAxisAlignment.CENTER, spacing=10),
             ft.Container(page_info, padding=ft.padding.only(top=10))
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-        
+
         self.pagination_container.visible = True
-    
+
     def prev_page(self, e):
         if self.current_pagination_page > 1:
             self.current_pagination_page -= 1
             self.update_results_display()
-    
+
     def next_page(self, e):
         paginated_results, total_results = self.get_paginated_results()
         total_pages = math.ceil(total_results / self.results_per_page)
         if self.current_pagination_page < total_pages:
             self.current_pagination_page += 1
             self.update_results_display()
-    
+
     def go_to_page(self, page_num):
         self.current_pagination_page = page_num
         self.update_results_display()
-    
+
     def update_results_display(self):
         self.results_container.controls.clear()
-        
         if not self.search_results:
             self.results_container.controls.append(
                 ft.Container(
                     content=ft.Column([
                         ft.Icon(ft.Icons.SEARCH_OFF, size=80, color=ft.Colors.GREY_400),
-                        ft.Text("Tidak ada CV yang ditemukan", 
+                        ft.Text("Tidak ada CV yang ditemukan",
                                size=18, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER),
-                        ft.Text("Coba gunakan kata kunci yang berbeda", 
+                        ft.Text("Coba gunakan kata kunci yang berbeda",
                                size=14, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
                     padding=50,
@@ -635,15 +639,14 @@ class ATSFrontend:
             self.pagination_container.visible = False
         else:
             paginated_results, total_results = self.get_paginated_results()
-            
             if not paginated_results:
                 self.results_container.controls.append(
                     ft.Container(
                         content=ft.Column([
                             ft.Icon(ft.Icons.SEARCH_OFF, size=80, color=ft.Colors.GREY_400),
-                            ft.Text("Tidak ada CV yang cocok dengan kata kunci", 
+                            ft.Text("Tidak ada CV yang cocok dengan kata kunci",
                                    size=18, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER),
-                            ft.Text("Coba kata kunci lain seperti: Python, React, JavaScript, HTML, CSS", 
+                            ft.Text("Coba kata kunci lain seperti: Python, React, JavaScript, HTML, CSS",
                                    size=14, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
                         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
                         padding=50,
@@ -653,37 +656,32 @@ class ATSFrontend:
                 self.pagination_container.visible = False
             else:
                 start_rank = (self.current_pagination_page - 1) * self.results_per_page + 1
-                
                 for i, result in enumerate(paginated_results):
                     card = self.create_cv_card(result, start_rank + i)
                     self.results_container.controls.append(card)
-                
                 self.update_pagination(total_results)
-
         try:
             self.results_container.update()
             self.pagination_container.update()
             self.page.update()
-        except Exception as e:
+        except Exception:
             self.page.update()
-    
+
     def create_cv_card(self, result: Dict, rank: int):
-        """Kartu CV dengan informasi nama kandidat, jumlah kecocokan, dan frekuensi keyword"""
         cv_data = result['cv_data']
         matches = result['matches']
         match_count = result['match_count']
         match_type = result['match_type']
         similarity = result.get('similarity_score', 0.0)
-        
+
         match_chips = []
         if matches:
             for keyword, count in matches.items():
                 chip_color = ft.Colors.INDIGO_100 if match_type == 'exact' else ft.Colors.ORANGE_100
                 text_color = ft.Colors.INDIGO_800 if match_type == 'exact' else ft.Colors.ORANGE_800
-                
                 match_chips.append(
                     ft.Container(
-                        content=ft.Text(f"{keyword}: {count}x", 
+                        content=ft.Text(f"{keyword}: {count}x",
                                        size=12, weight=ft.FontWeight.W_500, color=text_color),
                         padding=ft.padding.symmetric(horizontal=12, vertical=6),
                         bgcolor=chip_color,
@@ -694,7 +692,7 @@ class ATSFrontend:
         else:
             match_chips.append(
                 ft.Container(
-                    content=ft.Text("Tidak ada keyword yang cocok", 
+                    content=ft.Text("Tidak ada keyword yang cocok",
                                    size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_600),
                     padding=ft.padding.symmetric(horizontal=12, vertical=6),
                     bgcolor=ft.Colors.GREY_100,
@@ -702,16 +700,14 @@ class ATSFrontend:
                     border=ft.border.all(1, ft.Colors.GREY_400)
                 )
             )
-        
-        # Rank badge 
+
         if match_count == 0:
             rank_color = ft.Colors.GREY_500
         elif rank <= 3:
             rank_color = ft.Colors.AMBER
         else:
             rank_color = ft.Colors.INDIGO_600
-        
-        # Card background 
+
         if match_count > 5:
             card_gradient = ft.LinearGradient(
                 begin=ft.alignment.top_left,
@@ -726,13 +722,13 @@ class ATSFrontend:
             )
         else:
             card_gradient = None
-        
+
         return ft.Card(
             content=ft.Container(
                 content=ft.Column([
                     ft.Row([
                         ft.Container(
-                            content=ft.Text(f"#{rank}", color=ft.Colors.WHITE, 
+                            content=ft.Text(f"#{rank}", color=ft.Colors.WHITE,
                                            size=16, weight=ft.FontWeight.BOLD),
                             width=50,
                             height=50,
@@ -746,25 +742,22 @@ class ATSFrontend:
                                 offset=ft.Offset(0, 2)
                             )
                         ),
-                        
-                        # CV Info dengan nama kandidat dan jumlah kecocokan
                         ft.Column([
                             ft.Text(cv_data['name'], size=20, weight=ft.FontWeight.BOLD),
-                            ft.Text(f"📍 {cv_data['position']} di {cv_data['company']}", 
+                            ft.Text(f"📍 {cv_data['position']} di {cv_data.get('company', '-')}",
                                    size=14, color=ft.Colors.GREY_600),
                             ft.Row([
-                                ft.Icon(ft.Icons.TRENDING_UP, size=16, 
+                                ft.Icon(ft.Icons.TRENDING_UP, size=16,
                                        color=ft.Colors.GREEN_600 if match_count > 0 else ft.Colors.GREY_500),
-                                ft.Text(f"Jumlah Kecocokan: {match_count}", 
+                                ft.Text(f"Jumlah Kecocokan: {match_count}",
                                        size=14, weight=ft.FontWeight.W_500),
-                                ft.Text(f"• {match_type.replace('_', ' ').title()}", 
-                                       size=12, color=ft.Colors.INDIGO_600 if match_type == 'exact' 
+                                ft.Text(f"• {match_type.replace('_', ' ').title()}",
+                                       size=12, color=ft.Colors.INDIGO_600 if match_type == 'exact'
                                        else ft.Colors.ORANGE_600 if match_type == 'fuzzy' else ft.Colors.GREY_500),
-                                ft.Text(f"• Similarity: {similarity:.1%}", 
+                                ft.Text(f"• Similarity: {similarity:.1%}",
                                        size=12, color=ft.Colors.GREY_600) if match_count > 0 else ft.Text("")
                             ])
                         ], expand=True, spacing=5),
-                        
                         ft.Row([
                             ft.ElevatedButton(
                                 text="📄 Summary",
@@ -790,10 +783,7 @@ class ATSFrontend:
                             )
                         ], spacing=15)
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    
                     ft.Divider(color=ft.Colors.INDIGO_100),
-                    
-                    # Daftar kata kunci yang sesuai dan frekuensinya
                     ft.Column([
                         ft.Text("Kata Kunci yang Sesuai dan Frekuensinya:", size=14, weight=ft.FontWeight.W_500),
                         ft.Row(match_chips, wrap=True, spacing=8)
@@ -806,15 +796,14 @@ class ATSFrontend:
             shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900) if match_count > 0 else ft.Colors.with_opacity(0.1, ft.Colors.GREY_800),
             surface_tint_color=ft.Colors.INDIGO_50 if match_count > 0 else ft.Colors.GREY_50
         )
-    
+
     def show_summary(self, cv_data: Dict):
-        """Tombol Summary untuk menampilkan ekstraksi informasi dari CV"""
-        # MOCK DUMMY DATA
+        # Untuk demo, gunakan data dummy. Untuk produksi, ekstrak info dari PDF.
         mock_info = {
-            'summary': f"Profesional berpengalaman di bidang {cv_data['position']} dengan keahlian yang solid dan track record yang baik di {cv_data['company']}. Memiliki kemampuan analitis yang kuat dan dapat bekerja dalam tim maupun individu.",
+            'summary': f"Profesional berpengalaman di bidang {cv_data['position']} dengan keahlian yang solid dan track record yang baik di {cv_data.get('company', '-')}. Memiliki kemampuan analitis yang kuat dan dapat bekerja dalam tim maupun individu.",
             'skills': cv_data.get('skills', ['Python', 'JavaScript', 'React', 'SQL', 'Git', 'Docker', 'AWS']),
             'experience': [
-                f"Senior {cv_data['position']} di {cv_data['company']} (2021-2024)",
+                f"Senior {cv_data['position']} di {cv_data.get('company', '-')}",
                 "Software Developer di StartupXYZ (2019-2021)",
                 "Junior Developer di Tech Solutions (2018-2019)"
             ],
@@ -828,7 +817,7 @@ class ATSFrontend:
                 'location': random.choice(['Jakarta', 'Bandung', 'Surabaya', 'Yogyakarta'])
             }
         }
-        
+
         summary_content = ft.Column([
             ft.Row([
                 ft.IconButton(
@@ -849,8 +838,6 @@ class ATSFrontend:
                 )
             ]),
             ft.Divider(thickness=2, color=ft.Colors.INDIGO_200),
-            
-            # Data Informasi Pribadi
             ft.Card(
                 content=ft.Container(
                     content=ft.Column([
@@ -863,7 +850,7 @@ class ATSFrontend:
                             ft.Column([
                                 ft.Text(f"👤 Nama: {cv_data['name']}", size=16, weight=ft.FontWeight.W_500),
                                 ft.Text(f"💼 Posisi: {cv_data['position']}", size=14),
-                                ft.Text(f"🏢 Perusahaan: {cv_data['company']}", size=14),
+                                ft.Text(f"🏢 Perusahaan: {cv_data.get('company', '-')}", size=14),
                             ], expand=1),
                             ft.Column([
                                 ft.Text(f"📧 Email: {mock_info['contact']['email']}", size=14),
@@ -882,8 +869,6 @@ class ATSFrontend:
                 elevation=2,
                 shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900)
             ),
-            
-            # Summary
             ft.Card(
                 content=ft.Container(
                     content=ft.Column([
@@ -904,8 +889,6 @@ class ATSFrontend:
                 elevation=2,
                 shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.GREEN_900)
             ),
-            
-            # Skills
             ft.Card(
                 content=ft.Container(
                     content=ft.Column([
@@ -934,8 +917,6 @@ class ATSFrontend:
                 elevation=2,
                 shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.ORANGE_900)
             ),
-            
-            # Pengalaman
             ft.Card(
                 content=ft.Container(
                     content=ft.Column([
@@ -961,8 +942,6 @@ class ATSFrontend:
                 elevation=2,
                 shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.PURPLE_900)
             ),
-            
-            # Pendidikan
             ft.Card(
                 content=ft.Container(
                     content=ft.Column([
@@ -989,34 +968,28 @@ class ATSFrontend:
                 shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.RED_900)
             ),
         ], scroll=ft.ScrollMode.AUTO, spacing=20)
-        
+
         self.home_view.visible = False
         self.summary_view = ft.Container(
             content=summary_content,
             padding=20,
             visible=True
         )
-        
         self.header_back_button.visible = True
-        
         self.main_container.content.controls[2] = self.summary_view
         self.page.update()
-    
+
     def view_cv(self, cv_data: Dict):
-        """Tombol View CV untuk melihat langsung file CV asli"""
         self.show_snackbar(f"🔍 Membuka file CV asli: {cv_data['name']}.pdf", ft.Colors.INDIGO_600)
-    
+
     def go_to_home(self, e=None):
-        """Fungsi untuk kembali ke halaman utama"""
         self.home_view.visible = True
         self.summary_view.visible = False
         self.header_back_button.visible = False
-
         self.main_container.content.controls[1] = self.home_view
         self.main_container.content.controls[2] = ft.Container(visible=False)
-        
         self.page.update()
-    
+
     def show_snackbar(self, message: str, color: str = ft.Colors.INDIGO_600):
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(message, color=ft.Colors.WHITE),

@@ -1,54 +1,70 @@
-from faker import Faker
-import random
-import argparse
+# scripts/seed_sample_data.py
+"""
+Script untuk mengisi database dengan data sample untuk testing.
+Jalankan script ini setelah setup database untuk mendapatkan data testing.
+"""
 
+import sys
+import os
 
-def generate_sql(num: int, out_path: str = '../data/seed_data.sql'):
-    fake = Faker()
-    roles = ['Software Engineer', 'Data Analyst', 'UI/UX Designer', 'HR Specialist', 'Backend Developer']
+# Add parent directory to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    with open(out_path, 'w', encoding='utf8') as f:
-        # SQLite DDL
-        f.write("""
--- Schema for SQLite
-CREATE TABLE IF NOT EXISTS ApplicantProfile (
-  applicant_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  first_name TEXT,
-  last_name TEXT,
-  date_of_birth DATE,
-  address TEXT,
-  phone_number TEXT
-);
+from database.db_manager import DatabaseManager
 
-CREATE TABLE IF NOT EXISTS ApplicationDetail (
-  detail_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  applicant_id INTEGER NOT NULL,
-  application_role TEXT,
-  cv_path TEXT,
-  FOREIGN KEY(applicant_id) REFERENCES ApplicantProfile(applicant_id)
-);
+def main():
+    """Main function untuk seeding data sample"""
+    print("=== ATS Database Seeder ===")
+    print("Memulai proses seeding data sample...")
+    
+    # Initialize database manager
+    db_manager = DatabaseManager()
+    
+    if not db_manager.connection:
+        print("❌ Gagal koneksi ke database!")
+        return False
+    
+    # Create tables
+    print("📋 Membuat tabel database...")
+    if not db_manager.create_tables():
+        print("❌ Gagal membuat tabel!")
+        return False
+    
+    print("✅ Tabel berhasil dibuat!")
+    
+    # Seed sample data
+    print("🌱 Mengisi data sample...")
+    if not db_manager.seed_sample_data():
+        print("❌ Gagal mengisi data sample!")
+        return False
+    
+    print("✅ Data sample berhasil diisi!")
+    
+    # Show statistics
+    print("\n📊 Statistik Database:")
+    stats = db_manager.get_statistics()
+    
+    if stats:
+        print(f"   - Total Pelamar: {stats.get('total_applicants', 0)}")
+        print(f"   - Total Aplikasi Aktif: {stats.get('active_applications', 0)}")
+        
+        if 'applications_by_role' in stats:
+            print("\n   Aplikasi berdasarkan posisi:")
+            for role, count in stats['applications_by_role']:
+                print(f"     • {role}: {count} aplikasi")
+    
+    # Close connection
+    db_manager.disconnect()
+    
+    print("\n✅ Seeding selesai! Database siap digunakan.")
+    print("\n💡 Tips:")
+    print("   1. Pastikan file CV sample ada di directory 'data/'")
+    print("   2. Jalankan aplikasi utama dengan: python main.py")
+    print("   3. Gunakan keyword seperti: Python, React, JavaScript untuk testing")
+    
+    return True
 
-""")
-        f.write("BEGIN TRANSACTION;\n")
-        # DML ApplicantProfile
-        for _ in range(num):
-            first = fake.first_name().replace("'", "''")
-            last = fake.last_name().replace("'", "''")
-            dob = fake.date_of_birth(minimum_age=18, maximum_age=60).strftime('%Y-%m-%d')
-            addr = fake.address().replace("'", "''").replace("\n", ", ")
-            phone = fake.phone_number().replace("'", "''")
-            f.write(f"INSERT INTO ApplicantProfile (first_name, last_name, date_of_birth, address, phone_number) VALUES ('{first}','{last}','{dob}','{addr}','{phone}');\n")
-        # DML ApplicationDetail
-        for i in range(1, num+1):
-            role = random.choice(roles)
-            cv = f"../data/{fake.uuid4()}.pdf"
-            f.write(f"INSERT INTO ApplicationDetail (applicant_id, application_role, cv_path) VALUES ({i},'{role}','{cv}');\n")
-        f.write("COMMIT;\n")
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Generate SQL seed file for ATS SQLite database')
-    parser.add_argument('--num', type=int, default=100, help='Number of applicants to generate')
-    parser.add_argument('--out', type=str, default='../data/seed_data.sql', help='Output SQL file path')
-    args = parser.parse_args()
-    generate_sql(args.num, args.out)
-    print(f"Generated {args.out} with {args.num} applicants.")
+if __name__ == "__main__":
+    success = main()
+    if not success:
+        sys.exit(1)
