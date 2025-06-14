@@ -1,39 +1,44 @@
-import sys
 import os
-import flet as ft
+import sys
+import csv
 import time
 import math
 import random
+import flet as ft
 from typing import List, Dict
 
-# Pastikan src ada di sys.path
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from algorithms.kmp import KMPSearch
 from algorithms.bm import BoyerMooreSearch
 from algorithms.aho_corasick import AhoCorasickSearch
 from algorithms.levenshtein import LevenshteinDistance
-from algorithms.encryption import DataEncryption
-from database.db_manager import DatabaseManager
 from utils.pdf_extractor import PDFExtractor
 from utils.regex_extractor import RegexExtractor
+from database.db_manager import DatabaseManager
 
 class ATSFrontend:
     def __init__(self):
+        self.db = DatabaseManager()
+        self.db.create_tables()
         self.current_page = "home"
         self.search_results = []
         self.selected_cv = None
         self.current_pagination_page = 1
         self.results_per_page = 5
-
-        # Backend
-        self.db_manager = DatabaseManager()
+       
+        # Menginisialisasi algoritma
         self.kmp_search = KMPSearch()
         self.bm_search = BoyerMooreSearch()
         self.ac_search = AhoCorasickSearch()
         self.levenshtein = LevenshteinDistance()
         self.pdf_extractor = PDFExtractor()
         self.regex_extractor = RegexExtractor()
+
+     # Mengambil seluruh data dari database
+    def load_cvs_from_db(self):
+        return self.db.get_all_applications()
 
     def main(self, page: ft.Page):
         page.title = "ATS - Applicant Tracking System"
@@ -52,7 +57,11 @@ class ATSFrontend:
         self.page = page
         self.init_components()
 
-        # Main container
+        if not self.db.get_all_applications():
+            csv_path = "data/cv_data.csv"
+            if os.path.exists(csv_path):
+                self.db.import_csv_to_db(csv_path)
+
         self.main_container = ft.Container(
             content=ft.Column([
                 self.create_header(),
@@ -231,6 +240,7 @@ class ATSFrontend:
             e.control.scale = 1.0
         e.control.update()
 
+      # Header aplikasi
     def create_header(self):
         return ft.Container(
             content=ft.Column([
@@ -275,6 +285,7 @@ class ATSFrontend:
             border=ft.border.only(bottom=ft.BorderSide(3, ft.Colors.INDIGO_200))
         )
 
+    # Halaman utama
     def create_home_view(self):
         return ft.Container(
             content=ft.Column([
@@ -371,7 +382,8 @@ class ATSFrontend:
             ], spacing=20, scroll=ft.ScrollMode.AUTO),
             visible=True
         )
-
+    
+    # Proses pencarian CV berdasarkan kata kunci dan algoritma yang dipilih
     def search_cv(self, e):
         if not self.keyword_input.value:
             self.show_snackbar("⚠️ Mohon masukkan kata kunci untuk pencarian!", ft.Colors.ORANGE_600)
@@ -391,29 +403,32 @@ class ATSFrontend:
             top_matches = self.top_matches_dropdown.value
 
             # Ambil semua data CV dari database
-            cv_data = self.db_manager.get_all_cvs()
+            cv_data = self.load_cvs_from_db()
             if not cv_data:
-                self.show_snackbar("⚠️ Tidak ada CV dalam database. Silakan upload CV terlebih dahulu.", ft.Colors.ORANGE_600)
+                self.show_snackbar("⚠️ Tidak ada CV dalam database. Silakan isi data/cv_data.csv dan restart.", ft.Colors.ORANGE_600)
                 return
 
             start_time = time.time()
             all_results = []
+            fuzzy_start_time = 0
+            fuzzy_end_time = 0
+
             for cv in cv_data:
-                cv_path = os.path.join("data", cv["cv_path"])
-                cv_text = self.pdf_extractor.extract_text(cv_path)
+                cv_text = cv.get("resume_str", "")
                 matches = {}
                 total_matches = 0
 
                 if not cv_text:
                     all_results.append({
                         'cv_data': {
-                            'name': f"{cv['first_name']} {cv['last_name']}",
-                            'position': cv['application_role'],
+                            'name': cv.get('full_name', f"ID {cv.get('application_id', '-') }"),
+                            'position': cv.get('job_category', '-'),
                             'company': "Unknown",
-                            'skills': []
+                            'skills': self.regex_extractor.extract_skills(cv_text),
+                            'cv_path': cv.get('cv_path', '')
                         },
-                        'matches': {},
-                        'match_count': 0,
+                        'matches': matches,
+                        'match_count': total_matches,
                         'match_type': 'no_match',
                         'similarity_score': 0.0
                     })
@@ -422,7 +437,7 @@ class ATSFrontend:
                 cv_text_lower = cv_text.lower()
                 keywords_lower = [k.lower() for k in keywords]
 
-                # --- Exact match ---
+                # Exact match dengan algoritma yang dipilih
                 if algorithm == "AC":
                     ac_result = self.ac_search.search_multiple(cv_text_lower, keywords_lower)
                     for kw in keywords_lower:
@@ -442,11 +457,11 @@ class ATSFrontend:
                             matches[keyword_lower] = len(match_positions)
                             total_matches += len(match_positions)
 
-                # --- Fuzzy match (Levenshtein) jika tidak ada exact match ---
+               # Jika tidak ada exact match, lakukan fuzzy matching
                 fuzzy_matches = {}
                 fuzzy_total = 0
                 if total_matches == 0:
-                    # Split seluruh teks CV menjadi kata-kata unik
+                    fuzzy_start_time = time.time()
                     words = set(cv_text_lower.split())
                     for keyword_lower in keywords_lower:
                         for word in words:
@@ -455,6 +470,7 @@ class ATSFrontend:
                                 if similarity >= 0.7:
                                     fuzzy_matches[keyword_lower] = fuzzy_matches.get(keyword_lower, 0) + 1
                                     fuzzy_total += 1
+                    fuzzy_end_time = time.time()
 
                 # Gabungkan hasil
                 if total_matches > 0:
@@ -471,10 +487,11 @@ class ATSFrontend:
 
                 all_results.append({
                     'cv_data': {
-                        'name': f"{cv['first_name']} {cv['last_name']}",
-                        'position': cv['application_role'],
+                        'name': cv.get('full_name', f"ID {cv.get('application_id', '-') }"),
+                        'position': cv.get('job_category', '-'),
                         'company': "Unknown",
-                        'skills': self.regex_extractor.extract_skills(cv_text)
+                        'skills': self.regex_extractor.extract_skills(cv_text),
+                        'cv_path': cv.get('cv_path', '')
                     },
                     'matches': matches,
                     'match_count': total_matches,
@@ -483,8 +500,9 @@ class ATSFrontend:
                 })
 
             exact_time = (time.time() - start_time) * 1000
+            fuzzy_time = (fuzzy_end_time - fuzzy_start_time) * 1000 if fuzzy_end_time > fuzzy_start_time else 0
 
-            # Sort dan filter hasil
+            # Urutkan hasil berdasarkan jumlah kecocokan dan relevansi
             all_results.sort(key=lambda x: x['match_count'], reverse=True)
             if top_matches == "all":
                 self.search_results = all_results
@@ -494,7 +512,6 @@ class ATSFrontend:
             matching_count = len([r for r in self.search_results if r['match_count'] > 0])
             self.current_pagination_page = 1
             total_cvs = len(all_results)
-            fuzzy_time = 0
 
             self.update_summary_result_section(total_cvs, exact_time, fuzzy_time, algorithm)
             self.update_results_display()
@@ -510,6 +527,7 @@ class ATSFrontend:
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
             self.page.update()
 
+    # Menampilkan ringkasan waktu pencarian dan jumlah hasil
     def update_summary_result_section(self, total_cvs: int, exact_time: float, fuzzy_time: float, algorithm: str):
         exact_match_text = f"Exact Match: {total_cvs} CVs scanned in {exact_time:.0f}ms"
         fuzzy_match_text = f"Fuzzy Match: {total_cvs} CVs scanned in {fuzzy_time:.0f}ms"
@@ -527,6 +545,7 @@ class ATSFrontend:
         ])
         self.summary_result_section.visible = True
 
+    # Hasil pencarian sesuai halaman dengan pagination
     def get_paginated_results(self):
         filtered_results = [r for r in self.search_results if r['match_count'] > 0]
         if self.top_matches_dropdown.value == "all":
@@ -667,6 +686,7 @@ class ATSFrontend:
         except Exception:
             self.page.update()
 
+    # Untuk tampilan kartu cv
     def create_cv_card(self, result: Dict, rank: int):
         cv_data = result['cv_data']
         matches = result['matches']
@@ -798,26 +818,13 @@ class ATSFrontend:
         )
 
     def show_summary(self, cv_data: Dict):
-        # Untuk demo, gunakan data dummy. Untuk produksi, ekstrak info dari PDF.
-        mock_info = {
-            'summary': f"Profesional berpengalaman di bidang {cv_data['position']} dengan keahlian yang solid dan track record yang baik di {cv_data.get('company', '-')}. Memiliki kemampuan analitis yang kuat dan dapat bekerja dalam tim maupun individu.",
-            'skills': cv_data.get('skills', ['Python', 'JavaScript', 'React', 'SQL', 'Git', 'Docker', 'AWS']),
-            'experience': [
-                f"Senior {cv_data['position']} di {cv_data.get('company', '-')}",
-                "Software Developer di StartupXYZ (2019-2021)",
-                "Junior Developer di Tech Solutions (2018-2019)"
-            ],
-            'education': [
-                "S1 Teknik Informatika, Institut Teknologi Bandung (2014-2018)",
-                "SMA Negeri 1 Jakarta (2011-2014)"
-            ],
-            'contact': {
-                'email': f"{cv_data['name'].lower().replace(' ', '.')}@email.com",
-                'phone': f"+628{random.randint(10000000, 99999999)}",
-                'location': random.choice(['Jakarta', 'Bandung', 'Surabaya', 'Yogyakarta'])
-            }
-        }
-
+        cv_path = cv_data.get('cv_path', '')
+        resume_str = ""
+        for app in self.load_cvs_from_db():
+            if app.get('cv_path', '') == cv_path:
+                resume_str = app.get('resume_str', '')
+                break
+        info = self.regex_extractor.extract_cv_info(resume_str)
         summary_content = ft.Column([
             ft.Row([
                 ft.IconButton(
@@ -848,15 +855,10 @@ class ATSFrontend:
                         ft.Divider(color=ft.Colors.INDIGO_100),
                         ft.Row([
                             ft.Column([
-                                ft.Text(f"👤 Nama: {cv_data['name']}", size=16, weight=ft.FontWeight.W_500),
-                                ft.Text(f"💼 Posisi: {cv_data['position']}", size=14),
-                                ft.Text(f"🏢 Perusahaan: {cv_data.get('company', '-')}", size=14),
+                                ft.Text(f"👤 Nama: {', '.join(info.get('names', []))}", size=16, weight=ft.FontWeight.W_500),
+                                ft.Text(f"📧 Email: {', '.join(info.get('emails', []))}", size=14),
+                                ft.Text(f"📱 Telepon: {', '.join(info.get('phones', []))}", size=14),
                             ], expand=1),
-                            ft.Column([
-                                ft.Text(f"📧 Email: {mock_info['contact']['email']}", size=14),
-                                ft.Text(f"📱 Telepon: {mock_info['contact']['phone']}", size=14),
-                                ft.Text(f"📍 Lokasi: {mock_info['contact']['location']}", size=14),
-                            ], expand=1)
                         ])
                     ], spacing=10),
                     padding=20,
@@ -877,7 +879,7 @@ class ATSFrontend:
                             ft.Text("Ringkasan Profesional", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_600)
                         ]),
                         ft.Divider(color=ft.Colors.GREEN_100),
-                        ft.Text(mock_info['summary'], size=14, color=ft.Colors.GREY_800)
+                        ft.Text('\n'.join(info.get('summary', [])), size=14, color=ft.Colors.GREY_800)
                     ], spacing=10),
                     padding=20,
                     gradient=ft.LinearGradient(
@@ -904,7 +906,7 @@ class ATSFrontend:
                                 bgcolor=ft.Colors.ORANGE_100,
                                 border_radius=15,
                                 border=ft.border.all(1, ft.Colors.ORANGE_300)
-                            ) for skill in mock_info['skills']
+                            ) for skill in info.get('skills', [])
                         ], wrap=True, spacing=8)
                     ], spacing=10),
                     padding=20,
@@ -929,7 +931,7 @@ class ATSFrontend:
                             ft.Row([
                                 ft.Icon(ft.Icons.CIRCLE, size=8, color=ft.Colors.PURPLE_600),
                                 ft.Text(exp, size=14)
-                            ]) for exp in mock_info['experience']
+                            ]) for exp in info.get('experience', [])
                         ], spacing=8)
                     ], spacing=10),
                     padding=20,
@@ -954,7 +956,7 @@ class ATSFrontend:
                             ft.Row([
                                 ft.Icon(ft.Icons.CIRCLE, size=8, color=ft.Colors.RED_600),
                                 ft.Text(edu, size=14)
-                            ]) for edu in mock_info['education']
+                            ]) for edu in info.get('education', [])
                         ], spacing=8)
                     ], spacing=10),
                     padding=20,
@@ -979,8 +981,21 @@ class ATSFrontend:
         self.main_container.content.controls[2] = self.summary_view
         self.page.update()
 
+    # Untuk view file pdf
     def view_cv(self, cv_data: Dict):
-        self.show_snackbar(f"🔍 Membuka file CV asli: {cv_data['name']}.pdf", ft.Colors.INDIGO_600)
+        import subprocess
+        import platform
+        cv_path = cv_data.get('cv_path', '')
+        if os.path.exists(cv_path):
+            if platform.system() == "Windows":
+                os.startfile(cv_path)
+            elif platform.system() == "Darwin":
+                subprocess.call(["open", cv_path])
+            else:
+                subprocess.call(["xdg-open", cv_path])
+            self.show_snackbar(f"📄 Membuka file CV: {cv_path}", ft.Colors.INDIGO_600)
+        else:
+            self.show_snackbar(f"❌ File CV tidak ditemukan: {cv_path}", ft.Colors.RED_600)
 
     def go_to_home(self, e=None):
         self.home_view.visible = True
