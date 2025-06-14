@@ -4,9 +4,9 @@ import csv
 import time
 import math
 import random
+import traceback
 import flet as ft
 from typing import List, Dict
-
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
@@ -20,8 +20,13 @@ from database.db_manager import DatabaseManager
 
 class ATSFrontend:
     def __init__(self):
-        self.db = DatabaseManager()
+        # Initialize database manager using SQLite
+        self.db = DatabaseManager()  # defaults to SQLite ats.db
         self.db.create_tables()
+        
+        # Load extracted CV data if available
+        self.load_extracted_cv_data()
+        
         self.current_page = "home"
         self.search_results = []
         self.selected_cv = None
@@ -35,6 +40,19 @@ class ATSFrontend:
         self.levenshtein = LevenshteinDistance()
         self.pdf_extractor = PDFExtractor()
         self.regex_extractor = RegexExtractor()
+
+    def load_extracted_cv_data(self):
+        """Load extracted CV data into database if CSV exists"""
+        csv_path = "data/extracted_cvs.csv"
+        if os.path.exists(csv_path):
+            # Check if data is already loaded
+            existing_cvs = self.db.get_all_extracted_cvs()
+            if not existing_cvs:
+                print("Loading extracted CV data...")
+                self.db.import_extracted_cv_data(csv_path)
+                print(f"Loaded {len(self.db.get_all_extracted_cvs())} extracted CVs")
+        else:
+            print("No extracted CV data found. Run extract_cv_to_csv.py first.")
 
      # Mengambil seluruh data dari database
     def load_cvs_from_db(self):
@@ -392,145 +410,187 @@ class ATSFrontend:
         self.loading_indicator.visible = True
         self.search_button.content.content = ft.Row([
             ft.Icon(ft.Icons.HOURGLASS_EMPTY, color=ft.Colors.WHITE, size=24),
-            ft.Text("Sedang mencari...", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
-        ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
+            ft.Text("Sedang mencari...", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)        ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
         self.search_button.content.disabled = True
         self.page.update()
-
+        
         try:
             keywords = [k.strip() for k in self.keyword_input.value.split(",") if k.strip()]
             algorithm = self.algorithm_radio.value
             top_matches = self.top_matches_dropdown.value
-
-            # Ambil semua data CV dari database
-            cv_data = self.load_cvs_from_db()
-            if not cv_data:
-                self.show_snackbar("⚠️ Tidak ada CV dalam database. Silakan isi data/cv_data.csv dan restart.", ft.Colors.ORANGE_600)
-                return
-
+            
             start_time = time.time()
+            exact_search_time = 0
+            fuzzy_search_time = 0
+            
+            # Use extracted CV data for much faster search
+            extracted_cvs = self.db.get_all_extracted_cvs()
+            db_cvs = self.load_cvs_from_db()
+            
+            if not extracted_cvs:
+                self.show_snackbar("⚠️ Tidak ada data CV yang diekstrak. Jalankan extract_cv_to_csv.py terlebih dahulu.", ft.Colors.ORANGE_600)
+                return
+            
             all_results = []
-            fuzzy_start_time = 0
-            fuzzy_end_time = 0
+            
+            # Create lookup dictionary for database records
+            db_lookup = {}
+            for cv in db_cvs:
+                cv_id = self.db.get_cv_id_from_path(cv.get('cv_path', ''))
+                if cv_id:
+                    db_lookup[cv_id] = cv
 
-            for cv in cv_data:
-                cv_text = cv.get("resume_str", "")
+            for extracted_cv in extracted_cvs:                # Get extracted CV data and parse it properly
+                cv_id = extracted_cv['cv_id']
+                resume_text = extracted_cv['resume_str']
+                resume_html = extracted_cv['resume_html']
+                category = extracted_cv['category']
+                
+                # Parse the CV text to extract structured information
+                parsed_info = self.regex_extractor.extract_cv_info(resume_text) if resume_text else {}
+                
+                # Get database record if available
+                db_record = db_lookup.get(cv_id, {})
+                
+                # Combine searchable text
+                searchable_text = resume_text
+                if db_record:
+                    db_fields = [
+                        db_record.get('first_name', ''),
+                        db_record.get('last_name', ''),
+                        db_record.get('address', ''),
+                        db_record.get('phone_number', ''),
+                        db_record.get('application_role', '')
+                    ]
+                    searchable_text += ' ' + ' '.join([str(field) for field in db_fields if field])
+                  # Setup matching
                 matches = {}
                 total_matches = 0
-
-                if not cv_text:
-                    all_results.append({
-                        'cv_data': {
-                            'name': cv.get('full_name', f"ID {cv.get('application_id', '-') }"),
-                            'position': cv.get('job_category', '-'),
-                            'company': "Unknown",
-                            'skills': self.regex_extractor.extract_skills(cv_text),
-                            'cv_path': cv.get('cv_path', '')
-                        },
-                        'matches': matches,
-                        'match_count': total_matches,
-                        'match_type': 'no_match',
-                        'similarity_score': 0.0
-                    })
-                    continue
-
-                cv_text_lower = cv_text.lower()
                 keywords_lower = [k.lower() for k in keywords]
-
-                # Exact match dengan algoritma yang dipilih
-                if algorithm == "AC":
-                    ac_result = self.ac_search.search_multiple(cv_text_lower, keywords_lower)
-                    for kw in keywords_lower:
-                        count = len(ac_result.get(kw, []))
-                        if count > 0:
-                            matches[kw] = count
-                            total_matches += count
-                else:
-                    for keyword_lower in keywords_lower:
-                        if algorithm == "KMP":
-                            match_positions = self.kmp_search.search_all(cv_text_lower, keyword_lower)
-                        elif algorithm == "BM":
-                            match_positions = self.bm_search.search_all(cv_text_lower, keyword_lower)
-                        else:
-                            match_positions = self.kmp_search.search_all(cv_text_lower, keyword_lower)
-                        if match_positions:
-                            matches[keyword_lower] = len(match_positions)
-                            total_matches += len(match_positions)
-
-               # Jika tidak ada exact match, lakukan fuzzy matching
-                fuzzy_matches = {}
+                searchable_text_lower = searchable_text.lower()
+                
+                # Exact matching using selected algorithm
+                exact_start = time.time()
+                for kw in keywords_lower:
+                    if algorithm == "KMP":
+                        positions = self.kmp_search.search_all(searchable_text_lower, kw)
+                        count = len(positions)
+                    elif algorithm == "BM":
+                        positions = self.bm_search.search_all(searchable_text_lower, kw)
+                        count = len(positions)
+                    elif algorithm == "AC":
+                        positions = self.ac_search.search_single(searchable_text_lower, kw)
+                        count = len(positions)
+                    else:
+                        count = searchable_text_lower.count(kw)
+                    
+                    if count > 0:
+                        matches[kw] = count
+                        total_matches += count
+                exact_search_time += (time.time() - exact_start) * 1000
+                
+                # Fallback: fuzzy matching if no exact matches
                 fuzzy_total = 0
+                fuzzy_matches = {}
                 if total_matches == 0:
-                    fuzzy_start_time = time.time()
-                    words = set(cv_text_lower.split())
-                    for keyword_lower in keywords_lower:
-                        for word in words:
-                            if len(word) >= 3:
-                                similarity = self.levenshtein.similarity(keyword_lower, word)
-                                if similarity >= 0.7:
-                                    fuzzy_matches[keyword_lower] = fuzzy_matches.get(keyword_lower, 0) + 1
+                    fuzzy_start = time.time()
+                    for kw in keywords_lower:
+                        for word in set(searchable_text_lower.split()):
+                            if len(word) > 2:  # Skip very short words
+                                sim = self.levenshtein.similarity(kw, word)
+                                if sim >= 0.7:
+                                    fuzzy_matches[kw] = fuzzy_matches.get(kw, 0) + 1
                                     fuzzy_total += 1
-                    fuzzy_end_time = time.time()
-
-                # Gabungkan hasil
+                    fuzzy_search_time += (time.time() - fuzzy_start) * 1000
+                
+                # Determine match type and similarity
                 if total_matches > 0:
                     match_type = 'exact'
-                    similarity_score = min(1.0, total_matches / len(keywords))
+                    similarity = min(1.0, total_matches / len(keywords_lower))
                 elif fuzzy_total > 0:
                     match_type = 'fuzzy'
-                    similarity_score = min(1.0, fuzzy_total / len(keywords))
+                    similarity = min(1.0, fuzzy_total / len(keywords_lower))
                     matches = fuzzy_matches
                     total_matches = fuzzy_total
                 else:
                     match_type = 'no_match'
-                    similarity_score = 0.0
-
-                all_results.append({
+                    similarity = 0.0
+                
+                # Build result with extracted data
+                name = f"CV {cv_id}"
+                if db_record:
+                    first_name = db_record.get('first_name', '')
+                    last_name = db_record.get('last_name', '')
+                    if first_name or last_name:
+                        name = f"{first_name} {last_name}".strip()
+                    all_results.append({
                     'cv_data': {
-                        'name': cv.get('full_name', f"ID {cv.get('application_id', '-') }"),
-                        'position': cv.get('job_category', '-'),
-                        'company': "Unknown",
-                        'skills': self.regex_extractor.extract_skills(cv_text),
-                        'cv_path': cv.get('cv_path', '')
+                        'cv_id': cv_id,
+                        'name': name,
+                        'first_name': db_record.get('first_name', ''),
+                        'last_name': db_record.get('last_name', ''),
+                        'address': db_record.get('address', ''),
+                        'phone': db_record.get('phone_number', ''),
+                        'application_role': db_record.get('application_role', category),
+                        'cv_path': db_record.get('cv_path', f"data/cv/{category}/{cv_id}.pdf"),
+                        'category': category,
+                        'resume_text': resume_text,
+                        'resume_html': resume_html,
+                        'parsed_info': parsed_info,
+                        # Add structured fields for easy access
+                        'emails': parsed_info.get('emails', []),
+                        'phones': parsed_info.get('phones', []),
+                        'skills': parsed_info.get('skills', []),
+                        'education': parsed_info.get('education', []),
+                        'experience': parsed_info.get('experience', []),
+                        'summary': parsed_info.get('summary', []),
+                        'names': parsed_info.get('names', [])
                     },
                     'matches': matches,
                     'match_count': total_matches,
                     'match_type': match_type,
-                    'similarity_score': similarity_score
+                    'similarity_score': similarity
                 })
 
-            exact_time = (time.time() - start_time) * 1000
-            fuzzy_time = (fuzzy_end_time - fuzzy_start_time) * 1000 if fuzzy_end_time > fuzzy_start_time else 0
+            search_time = (time.time() - start_time) * 1000
 
-            # Urutkan hasil berdasarkan jumlah kecocokan dan relevansi
-            all_results.sort(key=lambda x: x['match_count'], reverse=True)
+            # Sort results by match count and similarity
+            all_results.sort(key=lambda x: (x['match_count'], x['similarity_score']), reverse=True)
+              # Apply top matches filter
             if top_matches == "all":
                 self.search_results = all_results
             else:
                 self.search_results = all_results[:int(top_matches)]
-
+            
             matching_count = len([r for r in self.search_results if r['match_count'] > 0])
             self.current_pagination_page = 1
             total_cvs = len(all_results)
-
-            self.update_summary_result_section(total_cvs, exact_time, fuzzy_time, algorithm)
+            
+            self.update_summary_result_section(total_cvs, exact_search_time, fuzzy_search_time, algorithm)
             self.update_results_display()
             self.show_snackbar(f"✅ Pencarian selesai! Ditemukan {matching_count} CV relevan dari {total_cvs} total CV", ft.Colors.GREEN_600)
-
         except Exception as ex:
             self.show_snackbar(f"❌ Error dalam pencarian: {str(ex)}", ft.Colors.RED_600)
+            print(f"Search error: {ex}")
+            print(f"Traceback: {traceback.format_exc()}")  # More detailed error info
         finally:
             self.loading_indicator.visible = False
             self.search_button.content.disabled = False
             self.search_button.content.content = ft.Row([
                 ft.Text("🔍 Mulai Pencarian CV", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
-            self.page.update()
-
-    # Menampilkan ringkasan waktu pencarian dan jumlah hasil
+            self.page.update()    # Menampilkan ringkasan waktu pencarian dan jumlah hasil
     def update_summary_result_section(self, total_cvs: int, exact_time: float, fuzzy_time: float, algorithm: str):
-        exact_match_text = f"Exact Match: {total_cvs} CVs scanned in {exact_time:.0f}ms"
-        fuzzy_match_text = f"Fuzzy Match: {total_cvs} CVs scanned in {fuzzy_time:.0f}ms"
+        # Calculate total processing time
+        total_time = exact_time + fuzzy_time
+        
+        # Count exact and fuzzy matches
+        exact_matches = len([r for r in self.search_results if r.get('match_type') == 'exact'])
+        fuzzy_matches = len([r for r in self.search_results if r.get('match_type') == 'fuzzy'])
+        
+        exact_match_text = f"Exact Match: {exact_matches} CVs found, {exact_time:.1f}ms processing time"
+        fuzzy_match_text = f"Fuzzy Match: {fuzzy_matches} CVs found, {fuzzy_time:.1f}ms processing time"
+        total_time_text = f"Total Processing Time: {total_time:.1f}ms for {total_cvs} CVs"
 
         self.summary_result_section.content = ft.Column([
             ft.Text("📊 Summary Result Section", size=18, weight=ft.FontWeight.BOLD),
@@ -538,9 +598,10 @@ class ATSFrontend:
             ft.Column([
                 ft.Text(exact_match_text, size=14, weight=ft.FontWeight.W_500),
                 ft.Text(fuzzy_match_text, size=14, weight=ft.FontWeight.W_500),
+                ft.Text(total_time_text, size=14, weight=ft.FontWeight.W_500, color=ft.Colors.INDIGO_600),
                 ft.Divider(color=ft.Colors.INDIGO_100),
                 ft.Text(f"Algoritma yang digunakan: {algorithm}", size=14, weight=ft.FontWeight.BOLD),
-                ft.Text(f"Total CV relevan: {len([r for r in self.search_results if r['match_count'] > 0])}", size=14)
+                ft.Text(f"Total CV relevan: {exact_matches + fuzzy_matches}", size=14, weight=ft.FontWeight.BOLD)
             ], spacing=8)
         ])
         self.summary_result_section.visible = True
@@ -763,8 +824,7 @@ class ATSFrontend:
                             )
                         ),
                         ft.Column([
-                            ft.Text(cv_data['name'], size=20, weight=ft.FontWeight.BOLD),
-                            ft.Text(f"📍 {cv_data['position']} di {cv_data.get('company', '-')}",
+                            ft.Text(cv_data['name'], size=20, weight=ft.FontWeight.BOLD),                            ft.Text(f"📍 {cv_data.get('application_role', cv_data.get('category', 'Unknown'))} • {cv_data.get('category', 'Unknown')}",
                                    size=14, color=ft.Colors.GREY_600),
                             ft.Row([
                                 ft.Icon(ft.Icons.TRENDING_UP, size=16,
@@ -815,16 +875,39 @@ class ATSFrontend:
             elevation=3,
             shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900) if match_count > 0 else ft.Colors.with_opacity(0.1, ft.Colors.GREY_800),
             surface_tint_color=ft.Colors.INDIGO_50 if match_count > 0 else ft.Colors.GREY_50
-        )
-
+        )    
     def show_summary(self, cv_data: Dict):
-        cv_path = cv_data.get('cv_path', '')
-        resume_str = ""
-        for app in self.load_cvs_from_db():
-            if app.get('cv_path', '') == cv_path:
-                resume_str = app.get('resume_str', '')
-                break
-        info = self.regex_extractor.extract_cv_info(resume_str)
+        # Use the pre-parsed information from cv_data
+        parsed_info = cv_data.get('parsed_info', {})
+        
+        # If no parsed info, try to extract from resume text
+        if not parsed_info:
+            resume_text = cv_data.get('resume_text', '')
+            if resume_text:
+                parsed_info = self.regex_extractor.extract_cv_info(resume_text)
+          # Get names - try from parsed info first, then from database fields
+        names = parsed_info.get('names', [])
+        if not names:
+            first_name = cv_data.get('first_name', '')
+            last_name = cv_data.get('last_name', '')
+            if first_name or last_name:
+                names = [f"{first_name} {last_name}".strip()]
+        
+        if not names:
+            names = [f"CV {cv_data.get('cv_id', 'Unknown')}"]
+            
+        # Format and organize the extracted information
+        emails = parsed_info.get('emails', [])
+        phones = parsed_info.get('phones', [])
+        skills = parsed_info.get('skills', [])
+        education = parsed_info.get('education', [])
+        experience = parsed_info.get('experience', [])
+        summary = parsed_info.get('summary', [])
+        
+        # Combine phone info from both sources
+        if cv_data.get('phone'):
+            phones.append(cv_data.get('phone'))
+        phones = list(set(phones))  # Remove duplicates
         summary_content = ft.Column([
             ft.Row([
                 ft.IconButton(
@@ -852,12 +935,14 @@ class ATSFrontend:
                             ft.Icon(ft.Icons.PERSON, size=30, color=ft.Colors.INDIGO_600),
                             ft.Text("Informasi Pribadi", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.INDIGO_600)
                         ]),
-                        ft.Divider(color=ft.Colors.INDIGO_100),
-                        ft.Row([
+                        ft.Divider(color=ft.Colors.INDIGO_100),                        ft.Row([
                             ft.Column([
-                                ft.Text(f"👤 Nama: {', '.join(info.get('names', []))}", size=16, weight=ft.FontWeight.W_500),
-                                ft.Text(f"📧 Email: {', '.join(info.get('emails', []))}", size=14),
-                                ft.Text(f"📱 Telepon: {', '.join(info.get('phones', []))}", size=14),
+                                ft.Text(f"👤 Nama: {', '.join(names)}", size=16, weight=ft.FontWeight.W_500),
+                                ft.Text(f"📧 Email: {', '.join(emails) if emails else 'Tidak tersedia'}", size=14),
+                                ft.Text(f"📱 Telepon: {', '.join(phones) if phones else 'Tidak tersedia'}", size=14),
+                                ft.Text(f"📍 Alamat: {cv_data.get('address', 'Tidak tersedia')}", size=14),
+                                ft.Text(f"💼 Role: {cv_data.get('application_role', cv_data.get('category', 'Unknown'))}", size=14),
+                                ft.Text(f"📂 Kategori: {cv_data.get('category', 'Unknown')}", size=14),
                             ], expand=1),
                         ])
                     ], spacing=10),
@@ -877,9 +962,11 @@ class ATSFrontend:
                         ft.Row([
                             ft.Icon(ft.Icons.SUMMARIZE, size=30, color=ft.Colors.GREEN_600),
                             ft.Text("Ringkasan Profesional", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_600)
-                        ]),
-                        ft.Divider(color=ft.Colors.GREEN_100),
-                        ft.Text('\n'.join(info.get('summary', [])), size=14, color=ft.Colors.GREY_800)
+                        ]),                        ft.Divider(color=ft.Colors.GREEN_100),
+                        ft.Column([
+                            ft.Text(summary_text, size=14, color=ft.Colors.GREY_800)
+                            for summary_text in (summary[:3] if len(summary) > 3 else summary)  # Limit to first 3 summaries
+                        ], spacing=10) if summary else ft.Text("Tidak ada ringkasan profesional yang tersedia.", size=14, color=ft.Colors.GREY_600)
                     ], spacing=10),
                     padding=20,
                     gradient=ft.LinearGradient(
@@ -898,16 +985,15 @@ class ATSFrontend:
                             ft.Icon(ft.Icons.STAR, size=30, color=ft.Colors.ORANGE_600),
                             ft.Text("Keahlian & Teknologi", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_600)
                         ]),
-                        ft.Divider(color=ft.Colors.ORANGE_100),
-                        ft.Row([
+                        ft.Divider(color=ft.Colors.ORANGE_100),                        ft.Row([
                             ft.Container(
                                 content=ft.Text(skill, size=12, color=ft.Colors.ORANGE_800, weight=ft.FontWeight.W_500),
                                 padding=ft.padding.symmetric(horizontal=12, vertical=6),
                                 bgcolor=ft.Colors.ORANGE_100,
                                 border_radius=15,
                                 border=ft.border.all(1, ft.Colors.ORANGE_300)
-                            ) for skill in info.get('skills', [])
-                        ], wrap=True, spacing=8)
+                            ) for skill in skills[:20]  # Limit to first 20 skills to avoid UI overflow
+                        ], wrap=True, spacing=8) if skills else ft.Text("Tidak ada informasi keahlian yang tersedia.", size=14, color=ft.Colors.GREY_600)
                     ], spacing=10),
                     padding=20,
                     gradient=ft.LinearGradient(
@@ -926,13 +1012,19 @@ class ATSFrontend:
                             ft.Icon(ft.Icons.WORK_HISTORY, size=30, color=ft.Colors.PURPLE_600),
                             ft.Text("Pengalaman Kerja", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.PURPLE_600)
                         ]),
-                        ft.Divider(color=ft.Colors.PURPLE_100),
-                        ft.Column([
+                        ft.Divider(color=ft.Colors.PURPLE_100),                        ft.Column([
                             ft.Row([
                                 ft.Icon(ft.Icons.CIRCLE, size=8, color=ft.Colors.PURPLE_600),
-                                ft.Text(exp, size=14)
-                            ]) for exp in info.get('experience', [])
-                        ], spacing=8)
+                                ft.Container(
+                                    content=ft.Text(
+                                        exp[:200] + "..." if len(exp) > 200 else exp,  # Truncate long experience entries
+                                        size=14, 
+                                        expand=True
+                                    ),
+                                    expand=True
+                                )
+                            ]) for exp in experience[:10]  # Limit to first 10 experience entries
+                        ], spacing=8) if experience else ft.Text("Tidak ada informasi pengalaman kerja yang tersedia.", size=14, color=ft.Colors.GREY_600)
                     ], spacing=10),
                     padding=20,
                     gradient=ft.LinearGradient(
@@ -951,13 +1043,18 @@ class ATSFrontend:
                             ft.Icon(ft.Icons.SCHOOL, size=30, color=ft.Colors.RED_600),
                             ft.Text("Riwayat Pendidikan", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.RED_600)
                         ]),
-                        ft.Divider(color=ft.Colors.RED_100),
-                        ft.Column([
+                        ft.Divider(color=ft.Colors.RED_100),                        ft.Column([
                             ft.Row([
                                 ft.Icon(ft.Icons.CIRCLE, size=8, color=ft.Colors.RED_600),
-                                ft.Text(edu, size=14)
-                            ]) for edu in info.get('education', [])
-                        ], spacing=8)
+                                ft.Container(
+                                    content=ft.Text(
+                                        edu[:150] + "..." if len(edu) > 150 else edu,  # Truncate long education entries
+                                        size=14
+                                    ),
+                                    expand=True
+                                )
+                            ]) for edu in education[:10]  # Limit to first 10 education entries
+                        ], spacing=8) if education else ft.Text("Tidak ada informasi pendidikan yang tersedia.", size=14, color=ft.Colors.GREY_600)
                     ], spacing=10),
                     padding=20,
                     gradient=ft.LinearGradient(
@@ -965,9 +1062,39 @@ class ATSFrontend:
                         end=ft.alignment.bottom_right,
                         colors=[ft.Colors.with_opacity(0.05, ft.Colors.RED_400), ft.Colors.WHITE]
                     ),
+                ),                elevation=2,
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.RED_900)
+            ),
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.ANALYTICS, size=30, color=ft.Colors.BLUE_600),
+                            ft.Text("Statistik CV", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_600)
+                        ]),
+                        ft.Divider(color=ft.Colors.BLUE_100),
+                        ft.Row([
+                            ft.Column([
+                                ft.Text(f"📝 Total Kata: {len(cv_data.get('resume_text', '').split()) if cv_data.get('resume_text') else 0}", size=14),
+                                ft.Text(f"📊 Skills Ditemukan: {len(skills)}", size=14),
+                                ft.Text(f"🎓 Info Pendidikan: {len(education)}", size=14),
+                            ], expand=1),
+                            ft.Column([
+                                ft.Text(f"💼 Pengalaman Kerja: {len(experience)}", size=14),
+                                ft.Text(f"📄 Ringkasan: {len(summary)}", size=14),
+                                ft.Text(f"🆔 CV ID: {cv_data.get('cv_id', 'Unknown')}", size=14),
+                            ], expand=1),
+                        ])
+                    ], spacing=10),
+                    padding=20,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.Colors.with_opacity(0.05, ft.Colors.BLUE_400), ft.Colors.WHITE]
+                    ),
                 ),
                 elevation=2,
-                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.RED_900)
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.BLUE_900)
             ),
         ], scroll=ft.ScrollMode.AUTO, spacing=20)
 
