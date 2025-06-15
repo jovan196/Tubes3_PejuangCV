@@ -9,21 +9,20 @@ import csv
 import re
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+from .pdf_extractor import PDFExtractor
+from .regex_extractor import RegexExtractor
 
-from utils.pdf_extractor import PDFExtractor
-from utils.regex_extractor import RegexExtractor
+# Define project root for data paths
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = BASE_DIR / 'data'
 
 def extract_id_from_filename(filename):
-    """Extract 8-digit ID from PDF filename"""
     match = re.search(r'(\d{8})\.pdf$', filename)
     if match:
         return match.group(1)
     return None
 
 def clean_text_for_csv(text):
-    """Clean text for CSV format - remove excessive whitespace and newlines"""
     if not text:
         return ""
     
@@ -128,7 +127,7 @@ def generate_html_from_text(text, category):
 
 def process_cv_directory():
     """Process all CV files and generate CSV data"""
-    cv_base_path = "data/cv"
+    cv_base_path = str(DATA_DIR / 'cv')
     pdf_extractor = PDFExtractor()
     regex_extractor = RegexExtractor()
     
@@ -201,12 +200,15 @@ def process_cv_directory():
 
 def save_to_csv(cv_data, output_file="data/extracted_cvs.csv"):
     """Save CV data to CSV file"""
-    print(f"Saving {len(cv_data)} records to {output_file}...")
+    out_path = Path(output_file)
+    if not out_path.is_absolute():
+        out_path = BASE_DIR / output_file
+    print(f"Saving {len(cv_data)} records to {out_path}...")
     
     # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    os.makedirs(out_path.parent, exist_ok=True)
     
-    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+    with open(out_path, 'w', newline='', encoding='utf-8') as csvfile:
         fieldnames = ['ID', 'Resume_str', 'Resume_html', 'Category']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
@@ -218,7 +220,10 @@ def save_to_csv(cv_data, output_file="data/extracted_cvs.csv"):
 
 def create_lookup_csv(cv_data, output_file="data/cv_lookup.csv"):
     """Create a simplified lookup CSV for quick search"""
-    print(f"Creating lookup CSV with {len(cv_data)} records...")
+    out_path = Path(output_file)
+    if not out_path.is_absolute():
+        out_path = BASE_DIR / output_file
+    print(f"Creating lookup CSV with {len(cv_data)} records at {out_path}...")
     
     lookup_data = []
     for record in cv_data:
@@ -245,7 +250,7 @@ def create_lookup_csv(cv_data, output_file="data/cv_lookup.csv"):
         
         lookup_data.append(lookup_record)
     
-    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+    with open(out_path, 'w', newline='', encoding='utf-8') as csvfile:
         fieldnames = ['ID', 'Category', 'Text_Length', 'Keywords', 'Text_Preview']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
@@ -261,8 +266,9 @@ def main():
     print("=" * 40)
     
     # Check if CV directory exists
-    if not os.path.exists("data/cv"):
-        print("Error: CV directory 'data/cv' not found!")
+    cv_dir = DATA_DIR / 'cv'
+    if not cv_dir.exists():
+        print(f"Error: CV directory '{cv_dir}' not found!")
         return
     
     # Process all CVs
@@ -273,10 +279,10 @@ def main():
         return
     
     # Save main CSV
-    save_to_csv(cv_data, "data/extracted_cvs.csv")
+    save_to_csv(cv_data, str(DATA_DIR / 'extracted_cvs.csv'))
     
     # Save lookup CSV
-    create_lookup_csv(cv_data, "data/cv_lookup.csv")
+    create_lookup_csv(cv_data, str(DATA_DIR / 'cv_lookup.csv'))
     
     # Display summary
     print(f"\nExtraction Summary:")

@@ -12,7 +12,7 @@ from src.frontend.app import main_app
 if __name__ == "__main__":
     # Ekstrak CV dari PDF ke CSV sebelum run aplikasi
     try:
-        import cv2csv
+        from src.utils import cv2csv
         cv2csv.main()
         print("✅ Ekstraksi CV ke CSV berhasil.")
     except Exception as e:
