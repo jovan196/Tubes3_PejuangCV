@@ -1,6 +1,8 @@
 import os
 import flet as ft
 import math
+import csv
+
 
 def load_seed_data_util(app):
     try:
@@ -19,31 +21,30 @@ def load_seed_data_util(app):
         print(f"❌ Error loading seed data: {e}")
 
 def load_extracted_cv_data_util(app):
-    print("🔧 Creating ExtractedCV table (if not exists)...")
-    app.db.create_extracted_cv_table()
-
+    """
+    Load extracted CV data from CSV into memory for searching.
+    Sets app.extracted_cvs as a list of dicts with keys: cv_id, resume_str, resume_html, category.
+    """
     csv_path = "data/extracted_cvs.csv"
+    app.extracted_cvs = []
     if os.path.exists(csv_path):
-        existing_cvs = app.db.get_all_extracted_cvs()
-        print(f"📊 Current extracted CVs in database: {len(existing_cvs)}")
-
-        if not existing_cvs:
-            print("🔄 Loading extracted CV data...")
-            try:
-                app.db.import_extracted_cv_data(csv_path)
-                loaded_cvs = app.db.get_all_extracted_cvs()
-                print(f"✅ Loaded {len(loaded_cvs)} extracted CVs")
-                if len(loaded_cvs) == 0:
-                    print("⚠️ Warning: No CVs were loaded from CSV file")
-            except Exception as e:
-                print(f"❌ Error loading extracted CV data: {e}")
-                import traceback
-                traceback.print_exc()
-        else:
-            print(f"📊 Using existing extracted CV data: {len(existing_cvs)} CVs already in database")
+        try:
+            with open(csv_path, newline='', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    app.extracted_cvs.append({
+                        'cv_id': row.get('ID', ''),
+                        'resume_str': row.get('Resume_str', ''),
+                        'resume_html': row.get('Resume_html', ''),
+                        'category': row.get('Category', '')
+                    })
+            print(f"✅ Loaded extracted CV CSV: {csv_path}, {len(app.extracted_cvs)} records")
+        except Exception as e:
+            print(f"❌ Error loading extracted CV CSV: {e}")
     else:
-        print("⚠️ No extracted CV data found at data/extracted_cvs.csv. Run cv2csv.py or other extraction scripts first.")
-
+        print(f"⚠️ No extracted CV CSV found at {csv_path}. Run cv2csv to generate it.")
+        app.extracted_cvs = []
+ 
 def load_cvs_from_db_util(app):
     return app.db.get_all_applications() # This likely fetches from ApplicantProfile & ApplicationDetail
 

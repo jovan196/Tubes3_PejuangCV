@@ -10,8 +10,8 @@ class DatabaseManager:
         self,
         host: str = "localhost",
         port: int = 3306,
-        user: str = "root",      # Username yang hardcoded untuk development
-        password: str = "root",  # Password yang hardcoded buat development
+        user: str = "root",  # Username default MySQL
+        password: str = "",  # Password default buat MySQL
         database: str = "ats_database"
     ):
         self.host = host
@@ -154,30 +154,6 @@ class DatabaseManager:
         self.connection.commit()
         print("Core tables (ApplicantProfile, ApplicationDetail) created successfully")
 
-    def create_extracted_cv_table(self) -> None:
-        """Create ExtractedCV table separately after seed data is loaded"""
-        cursor = self.connection.cursor()
-        
-        # ExtractedCV table for fast searching
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ExtractedCV (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                cv_id VARCHAR(20) UNIQUE NOT NULL,
-                resume_str LONGTEXT,
-                resume_html LONGTEXT,
-                category VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_cv_id (cv_id),
-                INDEX idx_category (category),
-                FULLTEXT(resume_str)
-            )
-            """
-        )
-        
-        self.connection.commit()
-        print("ExtractedCV table created successfully")
-
     def insert_applicant(self, first_name: str, last_name: str, date_of_birth: Optional[str] = None, address: str = "", phone_number: str = "") -> int:
         """
         Insert a new applicant into ApplicantProfile and return the new applicant_id.
@@ -295,75 +271,15 @@ class DatabaseManager:
         # Convert INSERT statements - remove double quotes around table names
         sql_content = re.sub(r'INSERT INTO "(\w+)"', r'INSERT INTO \1', sql_content)
           # Fix CV paths: convert single backslashes to forward slashes to prevent escape issues
-        # This handles paths like 'data\cv\ACCOUNTANT\10554236.pdf'
+        # This handles paths like 'data\\cv\\ACCOUNTANT\\10554236.pdf'
         # The issue is that backslashes are being treated as escape characters
-        sql_content = re.sub(r"'(data)\\(cv)\\([^\\]+)\\([^']+\.pdf)'", r"'data/cv/\3/\4'", sql_content)
+        sql_content = re.sub(r"'(data)\\(cv)\\([^\\]+)\\([^']+\\.pdf)'", r"'data/cv/\3/\4'", sql_content)
         
         # Convert date format if needed
         sql_content = re.sub(r"'(\d{4}-\d{2}-\d{2})'", r"'\1'", sql_content)
         
         return sql_content
 
-    # ExtractedCV methods
-    def insert_extracted_cv(self, cv_id: str, resume_str: str, resume_html: str, category: str) -> None:
-        """Insert extracted CV data"""
-        cursor = self.connection.cursor()
-        cursor.execute(
-            "INSERT IGNORE INTO ExtractedCV (cv_id, resume_str, resume_html, category) VALUES (%s, %s, %s, %s)",
-            (cv_id, resume_str, resume_html, category)
-        )
-        self.connection.commit()
-
-    def get_all_extracted_cvs(self) -> List[Dict]:
-        """Get all extracted CV data"""
-        try:
-            cursor = self.connection.cursor(dictionary=True)
-            cursor.execute("SELECT cv_id, resume_str, resume_html, category FROM ExtractedCV")
-            return cursor.fetchall()
-        except Error as e:
-            # Table might not exist yet
-            if "doesn't exist" in str(e) or "Table" in str(e):
-                return []
-            else:
-                raise e
-
-    def import_extracted_cv_data(self, csv_file_path: str) -> None:
-        """Import extracted CV data from CSV"""
-        try:
-            with open(csv_file_path, 'r', newline='', encoding='utf-8') as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    self.insert_extracted_cv(
-                        cv_id=row.get('ID', ''),
-                        resume_str=row.get('Resume_str', ''),
-                        resume_html=row.get('Resume_html', ''),
-                        category=row.get('Category', '')
-                    )
-            print(f"Successfully imported extracted CV data from {csv_file_path}")
-        except Exception as e:
-            print(f"Error importing extracted CV data: {e}")
-
-    def search_extracted_cvs(self, keywords: List[str], limit: Optional[int] = None) -> List[Dict]:
-        """Search extracted CVs using keywords"""
-        cursor = self.connection.cursor(dictionary=True)
-        
-        # Build WHERE clause for multiple keywords
-        where_conditions = []
-        params = []
-        
-        for keyword in keywords:
-            where_conditions.append("(resume_str LIKE %s OR category LIKE %s)")
-            params.extend([f"%{keyword}%", f"%{keyword}%"])
-        
-        where_clause = " AND ".join(where_conditions)
-        query = f"SELECT * FROM ExtractedCV WHERE {where_clause}"
-        
-        if limit:
-            query += f" LIMIT {limit}"
-        
-        cursor.execute(query, params)
-        return cursor.fetchall()
-    
     def get_cv_id_from_path(self, cv_path: Optional[str]) -> Optional[str]:
         """Extract CV ID from file path"""
         if cv_path is None or cv_path == '':

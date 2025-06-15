@@ -24,7 +24,7 @@ def handle_search_cv(app, e):
         start_time = time.time()
         exact_search_time = 0
         fuzzy_search_time = 0
-        extracted_cvs = app.db.get_all_extracted_cvs()
+        extracted_cvs = getattr(app, 'extracted_cvs', [])
         db_cvs = app.load_cvs_from_db()
 
         db_lookup = {}
