@@ -1,0 +1,1469 @@
+import os
+import sys
+import csv
+import time
+import math
+import random
+import traceback
+import flet as ft
+from typing import List, Dict
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from algorithms.kmp import KMPSearch
+from algorithms.bm import BoyerMooreSearch
+from algorithms.aho_corasick import AhoCorasickSearch
+from algorithms.levenshtein import LevenshteinDistance
+from utils.pdf_extractor import PDFExtractor
+from utils.regex_extractor import RegexExtractor
+from database.db_manager import DatabaseManager
+
+class ATSFrontend:
+    def __init__(self):
+        # Initialize database manager using default settings from DatabaseManager
+        print("🔗 Connecting to MySQL/MariaDB database...")
+        
+        try:
+            # Use default connection parameters defined in DatabaseManager
+            self.db = DatabaseManager()
+            print("✅ Successfully connected to MySQL/MariaDB database!")
+        except Exception as e:
+            print(f"❌ Failed to connect to MySQL/MariaDB: {e}")
+            print("Please ensure:")
+            print("  1. MariaDB/MySQL server is running")
+            print("  2. Connection settings are correct in src/database/db_manager.py")
+            print("  3. Database server is accessible on localhost:3306")
+            raise e
+        
+        self.db.create_tables()
+        
+        # Load seed data first (ApplicantProfile and ApplicationDetail)
+        self.load_seed_data()
+        
+        # Then load extracted CV data
+        self.load_extracted_cv_data()
+        
+        self.current_page = "home"
+        self.search_results = []
+        self.selected_cv = None
+        self.current_pagination_page = 1
+        self.results_per_page = 5
+       
+        # Menginisialisasi algoritma
+        self.kmp_search = KMPSearch()
+        self.bm_search = BoyerMooreSearch()
+        self.ac_search = AhoCorasickSearch()
+        self.levenshtein = LevenshteinDistance()
+        self.pdf_extractor = PDFExtractor()
+        self.regex_extractor = RegexExtractor()    
+    def load_seed_data(self):
+        """Load seed data from SQL file if tables are empty"""
+        try:
+            # Check if we already have applicant data
+            existing_applicants = self.db.get_all_applicants()
+            if not existing_applicants:
+                seed_file = "data/tubes3_seeding.sql"
+                if os.path.exists(seed_file):
+                    print("🔄 Loading seed data from data/tubes3_seeding.sql...")
+                    self.db.import_sql_file(seed_file)
+                    print(f"✅ Loaded {len(self.db.get_all_applicants())} applicants from seed data")
+                else:
+                    print("⚠️ No seed data file found at data/tubes3_seeding.sql")
+            else:
+                print(f"📊 Using existing data: {len(existing_applicants)} applicants already in database")
+        except Exception as e:
+            print(f"❌ Error loading seed data: {e}")
+
+    def load_extracted_cv_data(self):
+        """Load extracted CV data into database if CSV exists"""
+        # First create the ExtractedCV table (only after seed data is loaded)
+        print("🔧 Creating ExtractedCV table...")
+        self.db.create_extracted_cv_table()
+        
+        csv_path = "data/extracted_cvs.csv"
+        if os.path.exists(csv_path):
+            # Check if data is already loaded
+            existing_cvs = self.db.get_all_extracted_cvs()
+            print(f"📊 Current extracted CVs in database: {len(existing_cvs)}")
+            
+            if not existing_cvs:
+                print("🔄 Loading extracted CV data...")
+                try:
+                    self.db.import_extracted_cv_data(csv_path)
+                    # Verify data was loaded
+                    loaded_cvs = self.db.get_all_extracted_cvs()
+                    print(f"✅ Loaded {len(loaded_cvs)} extracted CVs")
+                    if len(loaded_cvs) == 0:
+                        print("⚠️ Warning: No CVs were loaded from CSV file")
+                except Exception as e:
+                    print(f"❌ Error loading extracted CV data: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"📊 Using existing extracted CV data: {len(existing_cvs)} CVs already in database")
+        else:
+            print("⚠️ No extracted CV data found. Run extract_cv_to_csv.py first.")
+
+     # Mengambil seluruh data dari database
+    def load_cvs_from_db(self):
+        return self.db.get_all_applications()
+
+    def main(self, page: ft.Page):
+        page.title = "ATS - Applicant Tracking System"
+        page.theme_mode = ft.ThemeMode.LIGHT
+        page.window_width = 1400
+        page.window_height = 900
+        page.window_resizable = True
+        page.padding = 0
+        page.scroll = ft.ScrollMode.AUTO
+
+        page.theme = ft.Theme(
+            color_scheme_seed=ft.Colors.INDIGO,
+            visual_density=ft.VisualDensity.COMFORTABLE,
+        )
+
+        self.page = page
+        self.init_components()
+
+        if not self.db.get_all_applications():
+            csv_path = "data/cv_data.csv"
+            if os.path.exists(csv_path):
+                self.db.import_csv_to_db(csv_path)
+
+        self.main_container = ft.Container(
+            content=ft.Column([
+                self.create_header(),
+                self.home_view,
+                self.summary_view
+            ], scroll=ft.ScrollMode.AUTO),
+            padding=20,
+            expand=True
+        )
+
+        page.add(self.main_container)
+        page.update()
+
+    def init_components(self):
+        self.keyword_input = ft.TextField(
+            label="Masukkan kata kunci pencarian",
+            hint_text="Contoh: React, Express, HTML",
+            width=500,
+            multiline=False,
+            prefix_icon=ft.Icons.SEARCH,
+            border_radius=10,
+            border_color=ft.Colors.INDIGO_400,
+            focused_border_color=ft.Colors.INDIGO_600,
+        )
+
+        self.algorithm_radio = ft.RadioGroup(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Radio(value="KMP", label="KMP (Knuth-Morris-Pratt)"),
+                    width=190
+                ),
+                ft.Container(
+                    content=ft.Radio(value="BM", label="BM (Boyer-Moore)"),
+                    width=150
+                ),
+                ft.Container(
+                    content=ft.Radio(value="AC", label="AC (Aho-Corasick)"),
+                    width=150
+                ),
+            ], spacing=10),
+            value="KMP"
+        )
+        self.top_matches_dropdown = ft.Dropdown(
+            width=250,
+            options=[
+                ft.dropdown.Option("5", "Top 5 CV"),
+                ft.dropdown.Option("10", "Top 10 CV"),
+                ft.dropdown.Option("15", "Top 15 CV"),
+                ft.dropdown.Option("20", "Top 20 CV"),
+                ft.dropdown.Option("25", "Top 25 CV"),
+                ft.dropdown.Option("all", "Tampilkan Semua CV"),
+            ],
+            value="10",
+            border_radius=10,
+            border_color=ft.Colors.INDIGO_400,
+            focused_border_color=ft.Colors.INDIGO_600,
+        )
+
+        self.search_button = ft.Container(
+            content=ft.ElevatedButton(
+                content=ft.Row([
+                    ft.Text("🔍 Mulai Pencarian CV", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=10),
+                on_click=self.search_cv,
+                style=ft.ButtonStyle(
+                    bgcolor=ft.Colors.TRANSPARENT,
+                    color=ft.Colors.WHITE,
+                    padding=ft.padding.all(20),
+                    animation_duration=300,
+                    elevation={"": 8, "hovered": 12},
+                    shape=ft.RoundedRectangleBorder(radius=15),
+                    overlay_color=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
+                    side=ft.BorderSide(2, ft.Colors.with_opacity(0.3, ft.Colors.WHITE)),
+                    shadow_color=ft.Colors.with_opacity(0.4, ft.Colors.BLUE_GREY_900),
+                ),
+                width=250,
+                height=70
+            ),
+            gradient=ft.LinearGradient(
+                begin=ft.alignment.top_left,
+                end=ft.alignment.bottom_right,
+                colors=[
+                    ft.Colors.BLUE_900,
+                    ft.Colors.INDIGO_900,
+                    ft.Colors.BLUE_900,
+                    ft.Colors.INDIGO_900,
+                ]
+            ),
+            border_radius=15,
+            shadow=ft.BoxShadow(
+                spread_radius=2,
+                blur_radius=15,
+                color=ft.Colors.with_opacity(0.4, ft.Colors.BLUE_GREY_900),
+                offset=ft.Offset(0, 6)
+            ),
+            animate=ft.Animation(300, ft.AnimationCurve.EASE_IN_OUT),
+            on_hover=self.on_button_hover,
+        )
+
+        self.loading_indicator = ft.ProgressRing(
+            width=30,
+            height=30,
+            stroke_width=3,
+            color=ft.Colors.INDIGO_400,
+            visible=False
+        )
+
+        self.summary_result_section = ft.Container(
+            content=ft.Column([
+                ft.Text("📊 Summary Result Section", size=18, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+                ft.Text("Belum ada pencarian yang dilakukan", size=14, color=ft.Colors.GREY_600)
+            ]),
+            padding=20,
+            border=ft.border.all(2, ft.Colors.INDIGO_200),
+            border_radius=15,
+            bgcolor=ft.Colors.INDIGO_50,
+            visible=False,
+            width=600,
+            shadow=ft.BoxShadow(
+                spread_radius=1,
+                blur_radius=10,
+                color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900),
+                offset=ft.Offset(0, 4)
+            )
+        )
+
+        self.results_container = ft.Column(
+            spacing=15,
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        self.pagination_container = ft.Container(
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=10
+            ),
+            padding=20,
+            visible=False
+        )
+
+        self.header_back_button = ft.IconButton(
+            icon=ft.Icons.HOME,
+            tooltip="Kembali ke Beranda",
+            on_click=self.go_to_home,
+            visible=False,
+            icon_size=30,
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.INDIGO_100,
+                color=ft.Colors.INDIGO_600,
+                shape=ft.CircleBorder(),
+            )        )
+
+        self.home_view = self.create_home_view()
+        self.summary_view = ft.Container(visible=False)
+
+    def on_button_hover(self, e):
+        if e.data == "true":
+            e.control.shadow = ft.BoxShadow(
+                spread_radius=3,
+                blur_radius=20,
+                color=ft.Colors.with_opacity(0.6, ft.Colors.BLUE_GREY_900),
+                offset=ft.Offset(0, 8)
+            )
+            e.control.scale = 1.02
+        else:
+            e.control.shadow = ft.BoxShadow(
+                spread_radius=2,
+                blur_radius=15,
+                color=ft.Colors.with_opacity(0.4, ft.Colors.BLUE_GREY_900),
+                offset=ft.Offset(0, 6)
+            )
+            e.control.scale = 1.0
+        e.control.update()
+
+      # Header aplikasi
+    def create_header(self):
+        return ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.WORK_OUTLINE, size=60, color=ft.Colors.WHITE),
+                        width=80,
+                        height=80,
+                        bgcolor=ft.Colors.INDIGO_600,
+                        border_radius=40,
+                        alignment=ft.alignment.center,
+                        shadow=ft.BoxShadow(
+                            spread_radius=1,
+                            blur_radius=10,
+                            color=ft.Colors.with_opacity(0.3, ft.Colors.INDIGO_900),
+                            offset=ft.Offset(0, 4)
+                        )
+                    ),
+                    ft.Column([
+                        ft.Text(
+                            "Applicant Tracking System (ATS)",
+                            size=36,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.INDIGO_600
+                        ),
+                        ft.Text(
+                            "Pemanfaatan Pattern Matching untuk Membangun Sistem ATS Berbasis CV Digital",
+                            size=16,
+                            color=ft.Colors.GREY_600
+                        )
+                    ], spacing=5, expand=True),
+                    self.header_back_button
+                ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ]),
+            padding=ft.padding.only(bottom=30),
+            margin=ft.margin.only(bottom=20),
+            gradient=ft.LinearGradient(
+                begin=ft.alignment.top_center,
+                end=ft.alignment.bottom_center,
+                colors=[ft.Colors.INDIGO_50, ft.Colors.WHITE]
+            ),
+            border=ft.border.only(bottom=ft.BorderSide(3, ft.Colors.INDIGO_200))
+        )
+
+    # Halaman utama
+    def create_home_view(self):
+        return ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text("📃 Pencarian CV", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.INDIGO_600)
+                        ]),
+                        ft.Divider(thickness=2, color=ft.Colors.INDIGO_200),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text("Kata Kunci Pencarian:", size=16, weight=ft.FontWeight.W_500),
+                                self.keyword_input,
+                                ft.Text("Untuk multiple keywords pisahkan dengan tanda koma (contoh: React, HTML, Javascript)",
+                                       size=12, color=ft.Colors.GREY_600, italic=True)
+                            ], spacing=8),
+                            margin=ft.margin.only(bottom=25)
+                        ),
+                        ft.Row([
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text("Pilih Algoritma Pencarian:", size=16, weight=ft.FontWeight.W_500),
+                                    ft.Container(
+                                        content=self.algorithm_radio,
+                                        padding=15,
+                                        border=ft.border.all(2, ft.Colors.INDIGO_300),
+                                        border_radius=10,
+                                        bgcolor=ft.Colors.INDIGO_50
+                                    )
+                                ], spacing=8),
+                                expand=1
+                            ),
+                            ft.VerticalDivider(width=30, color=ft.Colors.INDIGO_100),
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text("Jumlah CV yang Ditampilkan:", size=16, weight=ft.FontWeight.W_500),
+                                    self.top_matches_dropdown
+                                ], spacing=8),
+                                expand=1
+                            )
+                        ], spacing=20),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Row([
+                                    self.search_button,
+                                    self.loading_indicator
+                                ], alignment=ft.MainAxisAlignment.CENTER, spacing=20),
+                                ft.Text("Klik tombol di atas untuk memulai proses pencarian",
+                                       size=12, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER)
+                            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
+                            margin=ft.margin.only(top=30)                        )
+                    ], spacing=15),
+                    padding=30,
+                    border=ft.border.all(2, ft.Colors.INDIGO_200),
+                    border_radius=20,
+                    bgcolor=ft.Colors.with_opacity(0.7, ft.Colors.INDIGO_50),
+                    shadow=ft.BoxShadow(
+                        spread_radius=1,
+                        blur_radius=15,
+                        color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900),
+                        offset=ft.Offset(0, 5)
+                    )                ),
+                ft.Container(
+                    content=ft.Row([
+                        self.summary_result_section
+                    ], alignment=ft.MainAxisAlignment.CENTER),
+                    margin=ft.margin.only(top=30)
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text("📋 Hasil Pencarian CV", size=22, weight=ft.FontWeight.BOLD),
+                        ]),
+                        ft.Text("Kartu CV akan menampilkan nama kandidat, jumlah kecocokan, dan frekuensi keyword",
+                               size=14, color=ft.Colors.GREY_600),
+                        ft.Divider(thickness=2, color=ft.Colors.INDIGO_200),
+                        self.results_container,
+                        self.pagination_container
+                    ], spacing=15),
+                    padding=25,
+                    border=ft.border.all(2, ft.Colors.INDIGO_100),
+                    border_radius=15,
+                    bgcolor=ft.Colors.WHITE,
+                    margin=ft.margin.only(top=30),
+                    shadow=ft.BoxShadow(
+                        spread_radius=0,
+                        blur_radius=10,
+                        color=ft.Colors.with_opacity(0.1, ft.Colors.BLACK),
+                        offset=ft.Offset(0, 4)
+                    )
+                )
+            ], spacing=20, scroll=ft.ScrollMode.AUTO),
+            visible=True
+        )
+    
+    # Proses pencarian CV berdasarkan kata kunci dan algoritma yang dipilih
+    def search_cv(self, e):
+        if not self.keyword_input.value:
+            self.show_snackbar("⚠️ Mohon masukkan kata kunci untuk pencarian!", ft.Colors.ORANGE_600)
+            return
+
+        self.loading_indicator.visible = True
+        self.search_button.content.content = ft.Row([
+            ft.Icon(ft.Icons.HOURGLASS_EMPTY, color=ft.Colors.WHITE, size=24),
+            ft.Text("Sedang mencari...", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)        ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
+        self.search_button.content.disabled = True
+        self.page.update()
+        
+        try:
+            keywords = [k.strip() for k in self.keyword_input.value.split(",") if k.strip()]
+            algorithm = self.algorithm_radio.value
+            top_matches = self.top_matches_dropdown.value
+            
+            start_time = time.time()
+            exact_search_time = 0
+            fuzzy_search_time = 0
+              # Use extracted CV data for much faster search
+            extracted_cvs = self.db.get_all_extracted_cvs()
+            db_cvs = self.load_cvs_from_db()
+            
+            # Create lookup dictionary for database records
+            db_lookup = {}
+            extracted_cv_ids = set()
+            
+            for cv in db_cvs:
+                cv_id = self.db.get_cv_id_from_path(cv.get('cv_path', ''))
+                if cv_id:
+                    db_lookup[cv_id] = cv
+              # Track which CV IDs have extracted data
+            if extracted_cvs:
+                for extracted_cv in extracted_cvs:
+                    extracted_cv_ids.add(extracted_cv['cv_id'])
+            
+            # If there are no extracted CVs but there are database records, continue with database-only search
+            if not extracted_cvs and not db_cvs:
+                self.show_snackbar("⚠️ Tidak ada data CV yang tersedia. Periksa database atau jalankan extract_cv_to_csv.py.", ft.Colors.ORANGE_600)
+                return
+            
+            all_results = []
+              # First, process all extracted CVs (they have resume text)
+            if extracted_cvs:
+                for extracted_cv in extracted_cvs:
+                    # Get extracted CV data and parse it properly
+                    cv_id = extracted_cv['cv_id']
+                    resume_text = extracted_cv['resume_str']
+                    resume_html = extracted_cv['resume_html']
+                    category = extracted_cv['category']
+                    
+                    # Parse the CV text to extract structured information
+                    parsed_info = self.regex_extractor.extract_cv_info(resume_text) if resume_text else {}
+                    
+                    # Get database record if available
+                    db_record = db_lookup.get(cv_id, {})
+                    
+                    # Combine searchable text from CV and all database fields
+                    searchable_text = resume_text or ""
+                    if db_record:
+                        # Include ALL available database fields for comprehensive search
+                        db_fields = [
+                            db_record.get('first_name', ''),
+                            db_record.get('last_name', ''),
+                            db_record.get('address', ''),
+                            db_record.get('phone_number', ''),
+                            db_record.get('application_role', ''),
+                            db_record.get('date_of_birth', ''),
+                            str(db_record.get('applicant_id', '')),
+                            str(db_record.get('detail_id', ''))
+                        ]
+                        db_text = ' '.join([str(field) for field in db_fields if field])
+                        searchable_text += ' ' + db_text
+                        
+                        # Also search in the category from extracted CV
+                        if category:
+                            searchable_text += ' ' + category
+                    
+                    # Setup matching
+                    matches = {}
+                    total_matches = 0
+                    keywords_lower = [k.lower() for k in keywords]
+                    searchable_text_lower = searchable_text.lower()
+                    
+                    # Track which keywords were found
+                    keywords_found = 0
+                    # Exact matching using selected algorithm
+                    exact_start = time.time()
+                    
+                    if algorithm == "AC" and len(keywords_lower) > 1:
+                        # Use Aho-Corasick efficiently for multiple keywords
+                        all_matches = self.ac_search.search_multiple(searchable_text_lower, keywords_lower)
+                        for kw in keywords_lower:
+                            count = len(all_matches.get(kw, []))
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                    else:
+                        # Individual keyword search for other algorithms
+                        for kw in keywords_lower:
+                            count = 0
+                            if algorithm == "KMP":
+                                positions = self.kmp_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "BM":
+                                positions = self.bm_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "AC":
+                                positions = self.ac_search.search_single(searchable_text_lower, kw)
+                                count = len(positions)
+                            else:
+                                count = searchable_text_lower.count(kw)
+                            
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                                
+                    exact_search_time += (time.time() - exact_start) * 1000
+                    
+                    # Fallback: fuzzy matching if no exact matches
+                    fuzzy_total = 0
+                    fuzzy_matches = {}
+                    fuzzy_keywords_found = 0
+                    if total_matches == 0:
+                        fuzzy_start = time.time()
+                        for kw in keywords_lower:
+                            keyword_fuzzy_count = 0
+                            for word in set(searchable_text_lower.split()):
+                                if len(word) > 2:
+                                    sim = self.levenshtein.similarity(kw, word)
+                                    if sim >= 0.7:
+                                        keyword_fuzzy_count += 1
+                                        fuzzy_total += 1
+                            
+                            if keyword_fuzzy_count > 0:
+                                fuzzy_matches[kw] = keyword_fuzzy_count
+                                fuzzy_keywords_found += 1
+                        fuzzy_search_time += (time.time() - fuzzy_start) * 1000
+                    
+                    # Determine match type and similarity
+                    if total_matches > 0:
+                        match_type = 'exact'
+                        keyword_coverage = keywords_found / len(keywords_lower)
+                        avg_frequency = total_matches / keywords_found if keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.7 + min(1.0, avg_frequency / 5) * 0.3
+                    elif fuzzy_total > 0:
+                        match_type = 'fuzzy'
+                        keyword_coverage = fuzzy_keywords_found / len(keywords_lower)
+                        avg_frequency = fuzzy_total / fuzzy_keywords_found if fuzzy_keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.6 + min(1.0, avg_frequency / 3) * 0.4
+                        matches = fuzzy_matches
+                        total_matches = fuzzy_total
+                    else:
+                        match_type = 'no_match'
+                        similarity = 0.0
+                    
+                    # Build result with extracted data
+                    name = f"CV {cv_id}"
+                    if db_record:
+                        first_name = db_record.get('first_name', '')
+                        last_name = db_record.get('last_name', '')
+                        if first_name or last_name:
+                            name = f"{first_name} {last_name}".strip()
+                    
+                    all_results.append({
+                        'cv_data': {
+                            'cv_id': cv_id,
+                            'name': name,
+                            'first_name': db_record.get('first_name', '') if db_record else '',
+                            'last_name': db_record.get('last_name', '') if db_record else '',
+                            'address': db_record.get('address', '') if db_record else '',
+                            'phone': db_record.get('phone_number', '') if db_record else '',
+                            'application_role': db_record.get('application_role', category) if db_record else category,
+                            'cv_path': db_record.get('cv_path', f"data/cv/{category}/{cv_id}.pdf") if db_record else f"data/cv/{category}/{cv_id}.pdf",
+                            'category': category,
+                            'resume_text': resume_text,
+                            'resume_html': resume_html,
+                            'parsed_info': parsed_info,
+                            # Add structured fields for easy access
+                            'emails': parsed_info.get('emails', []),
+                            'phones': parsed_info.get('phones', []),
+                            'skills': parsed_info.get('skills', []),
+                            'education': parsed_info.get('education', []),
+                            'experience': parsed_info.get('experience', []),
+                            'summary': parsed_info.get('summary', []),
+                            'names': parsed_info.get('names', [])
+                        },
+                        'matches': matches,
+                        'match_count': total_matches,
+                        'match_type': match_type,
+                        'similarity_score': similarity,
+                        'keywords_found': keywords_found if total_matches > 0 else fuzzy_keywords_found,
+                        'total_keywords': len(keywords_lower),
+                        'keyword_coverage': (keywords_found if total_matches > 0 else fuzzy_keywords_found) / len(keywords_lower)
+                    })
+            # End for extracted_cv
+
+            # Second, process database-only records
+            if not extracted_cvs and db_cvs:
+                for cv in db_cvs:
+                    cv_id = cv.get('cv_id')
+                    if not cv_id:
+                        continue
+                    
+                    # Get extracted data if available
+                    extracted_data = next((item for item in extracted_cvs if item['cv_id'] == cv_id), None)
+                    resume_text = extracted_data['resume_str'] if extracted_data else ""
+                    resume_html = extracted_data['resume_html'] if extracted_data else ""
+                    category = extracted_data['category'] if extracted_data else ""
+                    
+                    # Parse the CV text to extract structured information
+                    parsed_info = self.regex_extractor.extract_cv_info(resume_text) if resume_text else {}
+                    
+                    # Combine searchable text from CV and all database fields
+                    searchable_text = resume_text or ""
+                    if cv:
+                        # Include ALL available database fields for comprehensive search
+                        db_fields = [
+                            cv.get('first_name', ''),
+                            cv.get('last_name', ''),
+                            cv.get('address', ''),
+                            cv.get('phone_number', ''),
+                            cv.get('application_role', ''),
+                            cv.get('date_of_birth', ''),
+                            str(cv.get('applicant_id', '')),
+                            str(cv.get('detail_id', ''))
+                        ]
+                        db_text = ' '.join([str(field) for field in db_fields if field])
+                        searchable_text += ' ' + db_text
+                        
+                        # Also search in the category from extracted CV
+                        if category:
+                            searchable_text += ' ' + category
+                    
+                    # Setup matching
+                    matches = {}
+                    total_matches = 0
+                    keywords_lower = [k.lower() for k in keywords]
+                    searchable_text_lower = searchable_text.lower()
+                    
+                    # Track which keywords were found
+                    keywords_found = 0
+                    # Exact matching using selected algorithm
+                    exact_start = time.time()
+                    
+                    if algorithm == "AC" and len(keywords_lower) > 1:
+                        # Use Aho-Corasick efficiently for multiple keywords
+                        all_matches = self.ac_search.search_multiple(searchable_text_lower, keywords_lower)
+                        for kw in keywords_lower:
+                            count = len(all_matches.get(kw, []))
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                    else:
+                        # Individual keyword search for other algorithms
+                        for kw in keywords_lower:
+                            count = 0
+                            if algorithm == "KMP":
+                                positions = self.kmp_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "BM":
+                                positions = self.bm_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "AC":
+                                positions = self.ac_search.search_single(searchable_text_lower, kw)
+                                count = len(positions)
+                            else:
+                                count = searchable_text_lower.count(kw)
+                            
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                                
+                    exact_search_time += (time.time() - exact_start) * 1000
+                    
+                    # Fallback: fuzzy matching if no exact matches
+                    fuzzy_total = 0
+                    fuzzy_matches = {}
+                    fuzzy_keywords_found = 0
+                    if total_matches == 0:
+                        fuzzy_start = time.time()
+                        for kw in keywords_lower:
+                            keyword_fuzzy_count = 0
+                            for word in set(searchable_text_lower.split()):
+                                if len(word) > 2:
+                                    sim = self.levenshtein.similarity(kw, word)
+                                    if sim >= 0.7:
+                                        keyword_fuzzy_count += 1
+                                        fuzzy_total += 1
+                            
+                            if keyword_fuzzy_count > 0:
+                                fuzzy_matches[kw] = keyword_fuzzy_count
+                                fuzzy_keywords_found += 1
+                        fuzzy_search_time += (time.time() - fuzzy_start) * 1000
+                    
+                    # Determine match type and similarity
+                    if total_matches > 0:
+                        match_type = 'exact'
+                        keyword_coverage = keywords_found / len(keywords_lower)
+                        avg_frequency = total_matches / keywords_found if keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.7 + min(1.0, avg_frequency / 5) * 0.3
+                    elif fuzzy_total > 0:
+                        match_type = 'fuzzy'
+                        keyword_coverage = fuzzy_keywords_found / len(keywords_lower)
+                        avg_frequency = fuzzy_total / fuzzy_keywords_found if fuzzy_keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.6 + min(1.0, avg_frequency / 3) * 0.4
+                        matches = fuzzy_matches
+                        total_matches = fuzzy_total
+                    else:
+                        match_type = 'no_match'
+                        similarity = 0.0
+                    
+                    # Build result with extracted data
+                    name = f"CV {cv_id}"
+                    if db_record:
+                        first_name = db_record.get('first_name', '')
+                        last_name = db_record.get('last_name', '')
+                        if first_name or last_name:
+                            name = f"{first_name} {last_name}".strip()
+                    
+                    all_results.append({
+                        'cv_data': {
+                            'cv_id': cv_id,
+                            'name': name,
+                            'first_name': db_record.get('first_name', '') if db_record else '',
+                            'last_name': db_record.get('last_name', '') if db_record else '',
+                            'address': db_record.get('address', '') if db_record else '',
+                            'phone': db_record.get('phone_number', '') if db_record else '',
+                            'application_role': db_record.get('application_role', category) if db_record else category,
+                            'cv_path': db_record.get('cv_path', f"data/cv/{category}/{cv_id}.pdf") if db_record else f"data/cv/{category}/{cv_id}.pdf",
+                            'category': category,
+                            'resume_text': resume_text,
+                            'resume_html': resume_html,
+                            'parsed_info': parsed_info,
+                            # Add structured fields for easy access
+                            'emails': parsed_info.get('emails', []),
+                            'phones': parsed_info.get('phones', []),
+                            'skills': parsed_info.get('skills', []),
+                            'education': parsed_info.get('education', []),
+                            'experience': parsed_info.get('experience', []),
+                            'summary': parsed_info.get('summary', []),
+                            'names': parsed_info.get('names', [])
+                        },
+                        'matches': matches,
+                        'match_count': total_matches,
+                        'match_type': match_type,
+                        'similarity_score': similarity,
+                        'keywords_found': keywords_found if total_matches > 0 else fuzzy_keywords_found,
+                        'total_keywords': len(keywords_lower),
+                        'keyword_coverage': (keywords_found if total_matches > 0 else fuzzy_keywords_found) / len(keywords_lower)
+                    })
+            # End for db_cvs
+
+            search_time = (time.time() - start_time) * 1000
+            
+            # Enhanced sorting logic for multiple keywords:
+            # 1. Keyword coverage (percentage of keywords found) - most important
+            # 2. Match type (exact > fuzzy > no match)
+            # 3. Total match count
+            # 4. Similarity score
+            def sort_key(result):
+                coverage = result['keyword_coverage']
+                match_type = result['match_type']
+                match_count = result['match_count']
+                similarity = result['similarity_score']
+                
+                # Give priority scores for match types
+                match_type_score = 3 if match_type == 'exact' else 2 if match_type == 'fuzzy' else 0
+                
+                return (coverage, match_type_score, match_count, similarity)
+            
+            all_results.sort(key=sort_key, reverse=True)
+              # Apply top matches filter
+            if top_matches == "all":
+                self.search_results = all_results
+            else:
+                self.search_results = all_results[:int(top_matches)]
+            
+            matching_count = len([r for r in self.search_results if r['match_count'] > 0])
+            self.current_pagination_page = 1
+            total_cvs = len(all_results)
+            
+            self.update_summary_result_section(total_cvs, exact_search_time, fuzzy_search_time, algorithm)
+            self.update_results_display()
+            self.show_snackbar(f"✅ Pencarian selesai! Ditemukan {matching_count} CV relevan dari {total_cvs} total CV", ft.Colors.GREEN_600)
+        except Exception as ex:
+            self.show_snackbar(f"❌ Error dalam pencarian: {str(ex)}", ft.Colors.RED_600)
+            print(f"Search error: {ex}")
+            print(f"Traceback: {traceback.format_exc()}")  # More detailed error info
+        finally:
+            self.loading_indicator.visible = False
+            self.search_button.content.disabled = False
+            self.search_button.content.content = ft.Row([
+                ft.Text("🔍 Mulai Pencarian CV", color=ft.Colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
+            self.page.update()    # Menampilkan ringkasan waktu pencarian dan jumlah hasil
+    def update_summary_result_section(self, total_cvs: int, exact_time: float, fuzzy_time: float, algorithm: str):
+        # Calculate total processing time
+        total_time = exact_time + fuzzy_time
+        
+        # Count exact and fuzzy matches
+        exact_matches = len([r for r in self.search_results if r.get('match_type') == 'exact'])
+        fuzzy_matches = len([r for r in self.search_results if r.get('match_type') == 'fuzzy'])
+        
+        exact_match_text = f"Exact Match: {exact_matches} CVs found, {exact_time:.1f}ms processing time"
+        fuzzy_match_text = f"Fuzzy Match: {fuzzy_matches} CVs found, {fuzzy_time:.1f}ms processing time"
+        total_time_text = f"Total Processing Time: {total_time:.1f}ms for {total_cvs} CVs"
+
+        self.summary_result_section.content = ft.Column([
+            ft.Text("📊 Summary Result Section", size=18, weight=ft.FontWeight.BOLD),
+            ft.Divider(color=ft.Colors.INDIGO_200),
+            ft.Column([
+                ft.Text(exact_match_text, size=14, weight=ft.FontWeight.W_500),
+                ft.Text(fuzzy_match_text, size=14, weight=ft.FontWeight.W_500),
+                ft.Text(total_time_text, size=14, weight=ft.FontWeight.W_500, color=ft.Colors.INDIGO_600),
+                ft.Divider(color=ft.Colors.INDIGO_100),
+                ft.Text(f"Algoritma yang digunakan: {algorithm}", size=14, weight=ft.FontWeight.BOLD),
+                ft.Text(f"Total CV relevan: {exact_matches + fuzzy_matches}", size=14, weight=ft.FontWeight.BOLD)
+            ], spacing=8)
+        ])
+        self.summary_result_section.visible = True
+
+    # Hasil pencarian sesuai halaman dengan pagination
+    def get_paginated_results(self):
+        filtered_results = [r for r in self.search_results if r['match_count'] > 0]
+        if self.top_matches_dropdown.value == "all":
+            filtered_results = self.search_results
+        start_idx = (self.current_pagination_page - 1) * self.results_per_page
+        end_idx = start_idx + self.results_per_page
+        return filtered_results[start_idx:end_idx], len(filtered_results)
+
+    def update_pagination(self, total_results: int):
+        total_pages = math.ceil(total_results / self.results_per_page)
+        if total_pages <= 1:
+            self.pagination_container.visible = False
+            return
+
+        pagination_controls = []
+        prev_button = ft.ElevatedButton(
+            text="← Sebelumnya",
+            on_click=self.prev_page,
+            disabled=self.current_pagination_page <= 1,
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.INDIGO_100 if self.current_pagination_page > 1 else ft.Colors.GREY_200,
+                color=ft.Colors.INDIGO_600 if self.current_pagination_page > 1 else ft.Colors.GREY_500,
+                padding=ft.padding.symmetric(horizontal=15, vertical=10),
+                shape=ft.RoundedRectangleBorder(radius=8),
+            )
+        )
+        pagination_controls.append(prev_button)
+
+        start_page = max(1, self.current_pagination_page - 2)
+        end_page = min(total_pages, start_page + 4)
+
+        if start_page > 1:
+            pagination_controls.append(ft.Text("...", color=ft.Colors.GREY_500))
+
+        for page_num in range(start_page, end_page + 1):
+            page_button = ft.ElevatedButton(
+                text=str(page_num),
+                on_click=lambda e, page=page_num: self.go_to_page(page),
+                style=ft.ButtonStyle(
+                    bgcolor=ft.Colors.INDIGO_600 if page_num == self.current_pagination_page else ft.Colors.INDIGO_100,
+                    color=ft.Colors.WHITE if page_num == self.current_pagination_page else ft.Colors.INDIGO_600,
+                    padding=ft.padding.all(12),
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                ),
+                width=50
+            )
+            pagination_controls.append(page_button)
+
+        if end_page < total_pages:
+            pagination_controls.append(ft.Text("...", color=ft.Colors.GREY_500))
+
+        next_button = ft.ElevatedButton(
+            text="Selanjutnya →",
+            on_click=self.next_page,
+            disabled=self.current_pagination_page >= total_pages,
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.INDIGO_100 if self.current_pagination_page < total_pages else ft.Colors.GREY_200,
+                color=ft.Colors.INDIGO_600 if self.current_pagination_page < total_pages else ft.Colors.GREY_500,
+                padding=ft.padding.symmetric(horizontal=15, vertical=10),
+                shape=ft.RoundedRectangleBorder(radius=8),
+            )
+        )
+        pagination_controls.append(next_button)
+
+        page_info = ft.Text(
+            f"Halaman {self.current_pagination_page} dari {total_pages} ({total_results} CV)",
+            size=14,
+            color=ft.Colors.GREY_600
+        )
+
+        self.pagination_container.content = ft.Column([
+            ft.Row(pagination_controls, alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+            ft.Container(page_info, padding=ft.padding.only(top=10))
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+
+        self.pagination_container.visible = True
+
+    def prev_page(self, e):
+        if self.current_pagination_page > 1:
+            self.current_pagination_page -= 1
+            self.update_results_display()
+
+    def next_page(self, e):
+        paginated_results, total_results = self.get_paginated_results()
+        total_pages = math.ceil(total_results / self.results_per_page)
+        if self.current_pagination_page < total_pages:
+            self.current_pagination_page += 1
+            self.update_results_display()
+
+    def go_to_page(self, page_num):
+        self.current_pagination_page = page_num
+        self.update_results_display()
+
+    def update_results_display(self):
+        self.results_container.controls.clear()
+        if not self.search_results:
+            self.results_container.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.SEARCH_OFF, size=80, color=ft.Colors.GREY_400),
+                        ft.Text("Tidak ada CV yang ditemukan",
+                               size=18, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER),
+                        ft.Text("Coba gunakan kata kunci yang berbeda",
+                               size=14, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
+                    padding=50,
+                    alignment=ft.alignment.center
+                )
+            )
+            self.pagination_container.visible = False
+        else:
+            paginated_results, total_results = self.get_paginated_results()
+            if not paginated_results:
+                self.results_container.controls.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Icon(ft.Icons.SEARCH_OFF, size=80, color=ft.Colors.GREY_400),
+                            ft.Text("Tidak ada CV yang cocok dengan kata kunci",
+                                   size=18, color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER),
+                            ft.Text("Coba kata kunci lain seperti: Python, React, JavaScript, HTML, CSS",
+                                   size=14, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
+                        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
+                        padding=50,
+                        alignment=ft.alignment.center
+                    )
+                )
+                self.pagination_container.visible = False
+            else:
+                start_rank = (self.current_pagination_page - 1) * self.results_per_page + 1
+                for i, result in enumerate(paginated_results):
+                    card = self.create_cv_card(result, start_rank + i)
+                    self.results_container.controls.append(card)
+                self.update_pagination(total_results)
+        try:
+            self.results_container.update()
+            self.pagination_container.update()
+            self.page.update()
+        except Exception:
+            self.page.update()
+
+    # Untuk tampilan kartu cv
+    def create_cv_card(self, result: Dict, rank: int):
+        cv_data = result['cv_data']
+        matches = result['matches']
+        match_count = result['match_count']
+        match_type = result['match_type']
+        similarity = result.get('similarity_score', 0.0)
+
+        match_chips = []
+        if matches:
+            for keyword, count in matches.items():
+                chip_color = ft.Colors.INDIGO_100 if match_type == 'exact' else ft.Colors.ORANGE_100
+                text_color = ft.Colors.INDIGO_800 if match_type == 'exact' else ft.Colors.ORANGE_800
+                match_chips.append(
+                    ft.Container(
+                        content=ft.Text(f"{keyword}: {count}x",
+                                       size=12, weight=ft.FontWeight.W_500, color=text_color),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        bgcolor=chip_color,
+                        border_radius=15,
+                        border=ft.border.all(1, text_color)
+                    )
+                )
+        else:
+            match_chips.append(
+                ft.Container(
+                    content=ft.Text("Tidak ada keyword yang cocok",
+                                   size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_600),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                    bgcolor=ft.Colors.GREY_100,
+                    border_radius=15,
+                    border=ft.border.all(1, ft.Colors.GREY_400)
+                )
+            )
+
+        if match_count == 0:
+            rank_color = ft.Colors.GREY_500
+        elif rank <= 3:
+            rank_color = ft.Colors.AMBER
+        else:
+            rank_color = ft.Colors.INDIGO_600
+
+        if match_count > 5:
+            card_gradient = ft.LinearGradient(
+                begin=ft.alignment.top_left,
+                end=ft.alignment.bottom_right,
+                colors=[ft.Colors.with_opacity(0.05, ft.Colors.INDIGO_400), ft.Colors.WHITE]
+            )
+        elif match_count > 0:
+            card_gradient = ft.LinearGradient(
+                begin=ft.alignment.top_left,
+                end=ft.alignment.bottom_right,
+                colors=[ft.Colors.with_opacity(0.03, ft.Colors.INDIGO_200), ft.Colors.WHITE]
+            )
+        else:
+            card_gradient = None
+
+        return ft.Card(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Container(
+                            content=ft.Text(f"#{rank}", color=ft.Colors.WHITE,
+                                           size=16, weight=ft.FontWeight.BOLD),
+                            width=50,
+                            height=50,
+                            bgcolor=rank_color,
+                            border_radius=25,
+                            alignment=ft.alignment.center,
+                            shadow=ft.BoxShadow(
+                                spread_radius=0,
+                                blur_radius=5,
+                                color=ft.Colors.with_opacity(0.3, ft.Colors.BLACK),
+                                offset=ft.Offset(0, 2)
+                            )
+                        ),
+                        ft.Column([
+                            ft.Text(cv_data['name'], size=20, weight=ft.FontWeight.BOLD),                            ft.Text(f"📍 {cv_data.get('application_role', cv_data.get('category', 'Unknown'))} • {cv_data.get('category', 'Unknown')}",
+                                   size=14, color=ft.Colors.GREY_600),                            ft.Row([
+                                ft.Icon(ft.Icons.TRENDING_UP, size=16,
+                                       color=ft.Colors.GREEN_600 if match_count > 0 else ft.Colors.GREY_500),
+                                ft.Text(f"Kecocokan: {match_count}",
+                                       size=14, weight=ft.FontWeight.W_500),
+                                ft.Text(f"• {result.get('keywords_found', 0)}/{result.get('total_keywords', 1)} keywords",
+                                       size=12, color=ft.Colors.BLUE_600),
+                                ft.Text(f"• {match_type.replace('_', ' ').title()}",
+                                       size=12, color=ft.Colors.INDIGO_600 if match_type == 'exact'
+                                       else ft.Colors.ORANGE_600 if match_type == 'fuzzy' else ft.Colors.GREY_500),
+                                ft.Text(f"• Similarity: {similarity:.1%}",
+                                       size=12, color=ft.Colors.GREY_600) if match_count > 0 else ft.Text("")
+                            ])
+                        ], expand=True, spacing=5),
+                        ft.Row([
+                            ft.ElevatedButton(
+                                text="📄 Summary",
+                                on_click=lambda e, cv=cv_data: self.show_summary(cv),
+                                style=ft.ButtonStyle(
+                                    color=ft.Colors.WHITE,
+                                    bgcolor={"": ft.Colors.GREEN_600, "hovered": ft.Colors.GREEN_700},
+                                    padding=ft.padding.symmetric(horizontal=25, vertical=12),
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                                width=140
+                            ),
+                            ft.ElevatedButton(
+                                text="👁️ View CV",
+                                on_click=lambda e, cv=cv_data: self.view_cv(cv),
+                                style=ft.ButtonStyle(
+                                    color=ft.Colors.WHITE,
+                                    bgcolor={"": ft.Colors.INDIGO_600, "hovered": ft.Colors.INDIGO_700},
+                                    padding=ft.padding.symmetric(horizontal=25, vertical=12),
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                                width=140
+                            )
+                        ], spacing=15)
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Divider(color=ft.Colors.INDIGO_100),
+                    ft.Column([
+                        ft.Text("Kata Kunci yang Sesuai dan Frekuensinya:", size=14, weight=ft.FontWeight.W_500),
+                        ft.Row(match_chips, wrap=True, spacing=8)
+                    ], spacing=8)
+                ], spacing=15),
+                padding=20,
+                gradient=card_gradient
+            ),
+            elevation=3,
+            shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900) if match_count > 0 else ft.Colors.with_opacity(0.1, ft.Colors.GREY_800),
+            surface_tint_color=ft.Colors.INDIGO_50 if match_count > 0 else ft.Colors.GREY_50
+        )    
+    def show_summary(self, cv_data: Dict):
+        # Use the pre-parsed information from cv_data
+        parsed_info = cv_data.get('parsed_info', {})
+        
+        # If no parsed info, try to extract from resume text
+        if not parsed_info:
+            resume_text = cv_data.get('resume_text', '')
+            if resume_text:
+                parsed_info = self.regex_extractor.extract_cv_info(resume_text)
+          # Get names - try from parsed info first, then from database fields
+        names = parsed_info.get('names', [])
+        if not names:
+            first_name = cv_data.get('first_name', '')
+            last_name = cv_data.get('last_name', '')
+            if first_name or last_name:
+                names = [f"{first_name} {last_name}".strip()]
+        
+        if not names:
+            names = [f"CV {cv_data.get('cv_id', 'Unknown')}"]
+            
+        # Format and organize the extracted information
+        emails = parsed_info.get('emails', [])
+        phones = parsed_info.get('phones', [])
+        skills = parsed_info.get('skills', [])
+        education = parsed_info.get('education', [])
+        experience = parsed_info.get('experience', [])
+        summary = parsed_info.get('summary', [])
+        
+        # Combine phone info from both sources
+        if cv_data.get('phone'):
+            phones.append(cv_data.get('phone'))
+        phones = list(set(phones))  # Remove duplicates
+        summary_content = ft.Column([
+            ft.Row([
+                ft.IconButton(
+                    icon=ft.Icons.ARROW_BACK,
+                    tooltip="Kembali ke Hasil Pencarian",
+                    on_click=self.go_to_home,
+                    style=ft.ButtonStyle(
+                        bgcolor=ft.Colors.INDIGO_100,
+                        color=ft.Colors.INDIGO_600,
+                        shape=ft.CircleBorder(),
+                    )
+                ),
+                ft.Text("📄 Informasi CV", size=28, weight=ft.FontWeight.BOLD, color=ft.Colors.INDIGO_600),
+                ft.Container(expand=True),
+                ft.Chip(
+                    label=ft.Text("CV Aktif", color=ft.Colors.WHITE),
+                    bgcolor=ft.Colors.GREEN_600
+                )
+            ]),
+            ft.Divider(thickness=2, color=ft.Colors.INDIGO_200),
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.PERSON, size=30, color=ft.Colors.INDIGO_600),
+                            ft.Text("Informasi Pribadi", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.INDIGO_600)
+                        ]),
+                        ft.Divider(color=ft.Colors.INDIGO_100),                        ft.Row([
+                            ft.Column([
+                                ft.Text(f"👤 Nama: {', '.join(names)}", size=16, weight=ft.FontWeight.W_500),
+                                ft.Text(f"📧 Email: {', '.join(emails) if emails else 'Tidak tersedia'}", size=14),
+                                ft.Text(f"📱 Telepon: {', '.join(phones) if phones else 'Tidak tersedia'}", size=14),
+                                ft.Text(f"📍 Alamat: {cv_data.get('address', 'Tidak tersedia')}", size=14),
+                                ft.Text(f"💼 Role: {cv_data.get('application_role', cv_data.get('category', 'Unknown'))}", size=14),
+                                ft.Text(f"📂 Kategori: {cv_data.get('category', 'Unknown')}", size=14),
+                            ], expand=1),
+                        ])
+                    ], spacing=10),
+                    padding=20,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.Colors.with_opacity(0.05, ft.Colors.INDIGO_400), ft.Colors.WHITE]
+                    ),
+                ),
+                elevation=2,
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900)
+            ),
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.SUMMARIZE, size=30, color=ft.Colors.GREEN_600),
+                            ft.Text("Ringkasan Profesional", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_600)
+                        ]),                        ft.Divider(color=ft.Colors.GREEN_100),
+                        ft.Column([
+                            ft.Text(summary_text, size=14, color=ft.Colors.GREY_800)
+                            for summary_text in (summary[:3] if len(summary) > 3 else summary)  # Limit to first 3 summaries
+                        ], spacing=10) if summary else ft.Text("Tidak ada ringkasan profesional yang tersedia.", size=14, color=ft.Colors.GREY_600)
+                    ], spacing=10),
+                    padding=20,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.Colors.with_opacity(0.05, ft.Colors.GREEN_400), ft.Colors.WHITE]
+                    ),
+                ),
+                elevation=2,
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.GREEN_900)
+            ),
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.STAR, size=30, color=ft.Colors.ORANGE_600),
+                            ft.Text("Keahlian & Teknologi", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_600)
+                        ]),
+                        ft.Divider(color=ft.Colors.ORANGE_100),                        ft.Row([
+                            ft.Container(
+                                content=ft.Text(skill, size=12, color=ft.Colors.ORANGE_800, weight=ft.FontWeight.W_500),
+                                padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                bgcolor=ft.Colors.ORANGE_100,
+                                border_radius=15,
+                                border=ft.border.all(1, ft.Colors.ORANGE_300)
+                            ) for skill in skills[:20]  # Limit to first 20 skills to avoid UI overflow
+                        ], wrap=True, spacing=8) if skills else ft.Text("Tidak ada informasi keahlian yang tersedia.", size=14, color=ft.Colors.GREY_600)
+                    ], spacing=10),
+                    padding=20,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.Colors.with_opacity(0.05, ft.Colors.ORANGE_400), ft.Colors.WHITE]
+                    ),
+                ),
+                elevation=2,
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.ORANGE_900)
+            ),
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.WORK_HISTORY, size=30, color=ft.Colors.PURPLE_600),
+                            ft.Text("Pengalaman Kerja", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.PURPLE_600)
+                        ]),
+                        ft.Divider(color=ft.Colors.PURPLE_100),                        ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.CIRCLE, size=8, color=ft.Colors.PURPLE_600),
+                                ft.Container(
+                                    content=ft.Text(
+                                        exp[:200] + "..." if len(exp) > 200 else exp,  # Truncate long experience entries
+                                        size=14, 
+                                        expand=True
+                                    ),
+                                    expand=True
+                                )
+                            ]) for exp in experience[:10]  # Limit to first 10 experience entries
+                        ], spacing=8) if experience else ft.Text("Tidak ada informasi pengalaman kerja yang tersedia.", size=14, color=ft.Colors.GREY_600)
+                    ], spacing=10),
+                    padding=20,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.Colors.with_opacity(0.05, ft.Colors.PURPLE_400), ft.Colors.WHITE]
+                    ),
+                ),
+                elevation=2,
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.PURPLE_900)
+            ),
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.SCHOOL, size=30, color=ft.Colors.RED_600),
+                            ft.Text("Riwayat Pendidikan", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.RED_600)
+                        ]),
+                        ft.Divider(color=ft.Colors.RED_100),                        ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.CIRCLE, size=8, color=ft.Colors.RED_600),
+                                ft.Container(
+                                    content=ft.Text(
+                                        edu[:150] + "..." if len(edu) > 150 else edu,  # Truncate long education entries
+                                        size=14
+                                    ),
+                                    expand=True
+                                )
+                            ]) for edu in education[:10]  # Limit to first 10 education entries
+                        ], spacing=8) if education else ft.Text("Tidak ada informasi pendidikan yang tersedia.", size=14, color=ft.Colors.GREY_600)
+                    ], spacing=10),
+                    padding=20,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.Colors.with_opacity(0.05, ft.Colors.RED_400), ft.Colors.WHITE]
+                    ),
+                ),                elevation=2,
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.RED_900)
+            ),
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.ANALYTICS, size=30, color=ft.Colors.BLUE_600),
+                            ft.Text("Statistik CV", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_600)
+                        ]),
+                        ft.Divider(color=ft.Colors.BLUE_100),
+                        ft.Row([
+                            ft.Column([
+                                ft.Text(f"📝 Total Kata: {len(cv_data.get('resume_text', '').split()) if cv_data.get('resume_text') else 0}", size=14),
+                                ft.Text(f"📊 Skills Ditemukan: {len(skills)}", size=14),
+                                ft.Text(f"🎓 Info Pendidikan: {len(education)}", size=14),
+                            ], expand=1),
+                            ft.Column([
+                                ft.Text(f"💼 Pengalaman Kerja: {len(experience)}", size=14),
+                                ft.Text(f"📄 Ringkasan: {len(summary)}", size=14),
+                                ft.Text(f"🆔 CV ID: {cv_data.get('cv_id', 'Unknown')}", size=14),
+                            ], expand=1),
+                        ])
+                    ], spacing=10),
+                    padding=20,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.Colors.with_opacity(0.05, ft.Colors.BLUE_400), ft.Colors.WHITE]
+                    ),
+                ),
+                elevation=2,
+                shadow_color=ft.Colors.with_opacity(0.2, ft.Colors.BLUE_900)
+            ),        ], scroll=ft.ScrollMode.AUTO, spacing=20)
+
+        self.home_view.visible = False
+        self.summary_view = ft.Container(
+            content=summary_content,
+            padding=20,
+            visible=True
+        )
+        self.header_back_button.visible = True
+        self.main_container.content.controls[2] = self.summary_view
+        self.page.update()
+
+    # Untuk view file pdf
+    def view_cv(self, cv_data: Dict):
+        import subprocess
+        import platform
+        cv_path = cv_data.get('cv_path', '')
+        
+        print(f"🔍 Debug - Attempting to open CV:")
+        print(f"   Original cv_path: {cv_path}")
+        print(f"   CV ID: {cv_data.get('cv_id', 'N/A')}")
+        print(f"   Category: {cv_data.get('category', 'N/A')}")
+        
+        # Convert relative path to absolute path
+        if cv_path and not os.path.isabs(cv_path):
+            cv_path = os.path.abspath(cv_path)
+            print(f"   Absolute cv_path: {cv_path}")
+        
+        if cv_path and os.path.exists(cv_path):
+            try:
+                print(f"   ✅ File exists, attempting to open: {cv_path}")
+                if platform.system() == "Windows":
+                    os.startfile(cv_path)
+                elif platform.system() == "Darwin":
+                    subprocess.call(["open", cv_path])
+                else:
+                    subprocess.call(["xdg-open", cv_path])
+                self.show_snackbar(f"📄 Membuka file CV: {os.path.basename(cv_path)}", ft.Colors.INDIGO_600)
+            except Exception as e:
+                print(f"   ❌ Error opening file: {str(e)}")
+                self.show_snackbar(f"❌ Gagal membuka file CV: {str(e)}", ft.Colors.RED_600)
+        else:
+            print(f"   ❌ File not found at: {cv_path}")
+            # Try to find the file by CV ID if path doesn't exist
+            cv_id = cv_data.get('cv_id', '')
+            category = cv_data.get('category', '')
+            if cv_id and category:
+                # Try alternative paths
+                possible_paths = [
+                    f"data/cv/{category}/{cv_id}.pdf",
+                    f"data/cv/{category.upper()}/{cv_id}.pdf",
+                    f"data/cv/{category.lower()}/{cv_id}.pdf"
+                ]
+                
+                print(f"   🔄 Trying alternative paths for CV ID {cv_id}:")
+                for possible_path in possible_paths:
+                    abs_path = os.path.abspath(possible_path)
+                    print(f"      Checking: {abs_path}")
+                    if os.path.exists(abs_path):
+                        try:
+                            print(f"      ✅ Found file, attempting to open: {abs_path}")
+                            if platform.system() == "Windows":
+                                os.startfile(abs_path)
+                            elif platform.system() == "Darwin":
+                                subprocess.call(["open", abs_path])
+                            else:
+                                subprocess.call(["xdg-open", abs_path])
+                            self.show_snackbar(f"📄 Membuka file CV: {os.path.basename(abs_path)}", ft.Colors.INDIGO_600)
+                            return
+                        except Exception as e:
+                            print(f"      ❌ Error opening alternative path: {str(e)}")
+                            continue
+                    else:
+                        print(f"      ❌ Not found: {abs_path}")
+            
+            self.show_snackbar(f"❌ File CV tidak ditemukan: {cv_path or 'Path tidak tersedia'}", ft.Colors.RED_600)
+
+    def go_to_home(self, e=None):
+        self.home_view.visible = True
+        self.summary_view.visible = False
+        self.header_back_button.visible = False
+        self.main_container.content.controls[1] = self.home_view
+        self.main_container.content.controls[2] = ft.Container(visible=False)
+        self.page.update()
+
+    def show_snackbar(self, message: str, color: str = ft.Colors.INDIGO_600):
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text(message, color=ft.Colors.WHITE),
+            bgcolor=color,
+            action="OK",
+            action_color=ft.Colors.WHITE,
+            duration=3000        )
+        self.page.snack_bar.open = True
+        self.page.update()
+
+def main(page: ft.Page):
+    app = ATSFrontend()
+    app.main(page)
+
+if __name__ == "__main__":
+    ft.app(target=main)
