@@ -32,7 +32,8 @@ class DatabaseManager:
                 auth_plugin='mysql_native_password'
             )
             cursor = temp_connection.cursor()
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {self.database}")
+            cursor.execute(f"DROP DATABASE IF EXISTS {self.database}") # Hapus database ats_database kalo ada
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {self.database}") # Bikin database ats_database yang baru
             temp_connection.commit()
             cursor.close()
             temp_connection.close()
@@ -52,7 +53,7 @@ class DatabaseManager:
             
         except Error as e:
             print(f"mysql-connector-python failed: {e}")
-            # Try with PyMySQL as fallback for MariaDB compatibility
+            # PyMySQL sebagai alternatif kalo mysql-connector-python gagal
             try:
                 import pymysql
                 pymysql.install_as_MySQLdb()

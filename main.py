@@ -55,8 +55,7 @@ class ATSFrontend:
         self.ac_search = AhoCorasickSearch()
         self.levenshtein = LevenshteinDistance()
         self.pdf_extractor = PDFExtractor()
-        self.regex_extractor = RegexExtractor()
-
+        self.regex_extractor = RegexExtractor()    
     def load_seed_data(self):
         """Load seed data from SQL file if tables are empty"""
         try:
@@ -85,10 +84,21 @@ class ATSFrontend:
         if os.path.exists(csv_path):
             # Check if data is already loaded
             existing_cvs = self.db.get_all_extracted_cvs()
+            print(f"📊 Current extracted CVs in database: {len(existing_cvs)}")
+            
             if not existing_cvs:
                 print("🔄 Loading extracted CV data...")
-                self.db.import_extracted_cv_data(csv_path)
-                print(f"✅ Loaded {len(self.db.get_all_extracted_cvs())} extracted CVs")
+                try:
+                    self.db.import_extracted_cv_data(csv_path)
+                    # Verify data was loaded
+                    loaded_cvs = self.db.get_all_extracted_cvs()
+                    print(f"✅ Loaded {len(loaded_cvs)} extracted CVs")
+                    if len(loaded_cvs) == 0:
+                        print("⚠️ Warning: No CVs were loaded from CSV file")
+                except Exception as e:
+                    print(f"❌ Error loading extracted CV data: {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"📊 Using existing extracted CV data: {len(existing_cvs)} CVs already in database")
         else:
@@ -273,45 +283,8 @@ class ATSFrontend:
                 bgcolor=ft.Colors.INDIGO_100,
                 color=ft.Colors.INDIGO_600,
                 shape=ft.CircleBorder(),
-            )
-        )
+            )        )
 
-        # SQL Import Components
-        self.sql_files_dropdown = ft.Dropdown(
-            width=400,
-            label="Pilih file .sql untuk import data",
-            options=[],
-            border_radius=10,
-            border_color=ft.Colors.GREEN_400,
-            focused_border_color=ft.Colors.GREEN_600,
-        )
-        
-        self.import_sql_button = ft.ElevatedButton(
-            text="📥 Import Data dari SQL",
-            on_click=self.import_sql_data,
-            style=ft.ButtonStyle(
-                color=ft.Colors.WHITE,
-                bgcolor={"": ft.Colors.GREEN_600, "hovered": ft.Colors.GREEN_700},
-                padding=ft.padding.symmetric(horizontal=25, vertical=15),
-                shape=ft.RoundedRectangleBorder(radius=10),
-            ),
-            width=200
-        )
-        
-        self.refresh_sql_button = ft.IconButton(
-            icon=ft.Icons.REFRESH,
-            tooltip="Refresh daftar file SQL",
-            on_click=self.refresh_sql_files,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.GREEN_100,
-                color=ft.Colors.GREEN_600,
-                shape=ft.CircleBorder(),
-            )
-        )
-        
-        # Populate SQL files dropdown
-        self.refresh_sql_files()
-        
         self.home_view = self.create_home_view()
         self.summary_view = ft.Container(visible=False)
 
@@ -441,44 +414,7 @@ class ATSFrontend:
                         blur_radius=15,
                         color=ft.Colors.with_opacity(0.2, ft.Colors.INDIGO_900),
                         offset=ft.Offset(0, 5)
-                    )
-                ),
-                ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Text("📥 Import Data dari SQL", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_600)
-                        ]),
-                        ft.Divider(thickness=2, color=ft.Colors.GREEN_200),
-                        ft.Container(
-                            content=ft.Column([
-                                ft.Text("Pilih file .sql dari direktori data/ untuk mengimpor data profil:", size=16, weight=ft.FontWeight.W_500),
-                                ft.Row([
-                                    self.sql_files_dropdown,
-                                    self.refresh_sql_button
-                                ], spacing=10),
-                                ft.Text("File tubes3_seeding.sql berisi data profil aplikan yang dapat diimpor ke database MySQL",
-                                       size=12, color=ft.Colors.GREY_600, italic=True),
-                                ft.Container(
-                                    content=self.import_sql_button,
-                                    margin=ft.margin.only(top=15),
-                                    alignment=ft.alignment.center
-                                )
-                            ], spacing=10),
-                            margin=ft.margin.only(bottom=20)
-                        )
-                    ], spacing=15),
-                    padding=30,
-                    border=ft.border.all(2, ft.Colors.GREEN_200),
-                    border_radius=20,
-                    bgcolor=ft.Colors.with_opacity(0.7, ft.Colors.GREEN_50),
-                    shadow=ft.BoxShadow(
-                        spread_radius=1,
-                        blur_radius=15,
-                        color=ft.Colors.with_opacity(0.2, ft.Colors.GREEN_900),
-                        offset=ft.Offset(0, 5)
-                    ),
-                    margin=ft.margin.only(top=30)
-                ),
+                    )                ),
                 ft.Container(
                     content=ft.Row([
                         self.summary_result_section
@@ -533,140 +469,363 @@ class ATSFrontend:
             start_time = time.time()
             exact_search_time = 0
             fuzzy_search_time = 0
-            
-            # Use extracted CV data for much faster search
+              # Use extracted CV data for much faster search
             extracted_cvs = self.db.get_all_extracted_cvs()
             db_cvs = self.load_cvs_from_db()
             
-            if not extracted_cvs:
-                self.show_snackbar("⚠️ Tidak ada data CV yang diekstrak. Jalankan extract_cv_to_csv.py terlebih dahulu.", ft.Colors.ORANGE_600)
-                return
-            
-            all_results = []
-            
             # Create lookup dictionary for database records
             db_lookup = {}
+            extracted_cv_ids = set()
+            
             for cv in db_cvs:
                 cv_id = self.db.get_cv_id_from_path(cv.get('cv_path', ''))
                 if cv_id:
                     db_lookup[cv_id] = cv
-
-            for extracted_cv in extracted_cvs:                # Get extracted CV data and parse it properly
-                cv_id = extracted_cv['cv_id']
-                resume_text = extracted_cv['resume_str']
-                resume_html = extracted_cv['resume_html']
-                category = extracted_cv['category']
-                
-                # Parse the CV text to extract structured information
-                parsed_info = self.regex_extractor.extract_cv_info(resume_text) if resume_text else {}
-                
-                # Get database record if available
-                db_record = db_lookup.get(cv_id, {})
-                
-                # Combine searchable text
-                searchable_text = resume_text
-                if db_record:
-                    db_fields = [
-                        db_record.get('first_name', ''),
-                        db_record.get('last_name', ''),
-                        db_record.get('address', ''),
-                        db_record.get('phone_number', ''),
-                        db_record.get('application_role', '')
-                    ]
-                    searchable_text += ' ' + ' '.join([str(field) for field in db_fields if field])
-                  # Setup matching
-                matches = {}
-                total_matches = 0
-                keywords_lower = [k.lower() for k in keywords]
-                searchable_text_lower = searchable_text.lower()
-                
-                # Exact matching using selected algorithm
-                exact_start = time.time()
-                for kw in keywords_lower:
-                    if algorithm == "KMP":
-                        positions = self.kmp_search.search_all(searchable_text_lower, kw)
-                        count = len(positions)
-                    elif algorithm == "BM":
-                        positions = self.bm_search.search_all(searchable_text_lower, kw)
-                        count = len(positions)
-                    elif algorithm == "AC":
-                        positions = self.ac_search.search_single(searchable_text_lower, kw)
-                        count = len(positions)
-                    else:
-                        count = searchable_text_lower.count(kw)
+              # Track which CV IDs have extracted data
+            if extracted_cvs:
+                for extracted_cv in extracted_cvs:
+                    extracted_cv_ids.add(extracted_cv['cv_id'])
+            
+            # If there are no extracted CVs but there are database records, continue with database-only search
+            if not extracted_cvs and not db_cvs:
+                self.show_snackbar("⚠️ Tidak ada data CV yang tersedia. Periksa database atau jalankan extract_cv_to_csv.py.", ft.Colors.ORANGE_600)
+                return
+            
+            all_results = []
+              # First, process all extracted CVs (they have resume text)
+            if extracted_cvs:
+                for extracted_cv in extracted_cvs:
+                    # Get extracted CV data and parse it properly
+                    cv_id = extracted_cv['cv_id']
+                    resume_text = extracted_cv['resume_str']
+                    resume_html = extracted_cv['resume_html']
+                    category = extracted_cv['category']
                     
-                    if count > 0:
-                        matches[kw] = count
-                        total_matches += count
-                exact_search_time += (time.time() - exact_start) * 1000
-                
-                # Fallback: fuzzy matching if no exact matches
-                fuzzy_total = 0
-                fuzzy_matches = {}
-                if total_matches == 0:
-                    fuzzy_start = time.time()
-                    for kw in keywords_lower:
-                        for word in set(searchable_text_lower.split()):
-                            if len(word) > 2:  # Skip very short words
-                                sim = self.levenshtein.similarity(kw, word)
-                                if sim >= 0.7:
-                                    fuzzy_matches[kw] = fuzzy_matches.get(kw, 0) + 1
-                                    fuzzy_total += 1
-                    fuzzy_search_time += (time.time() - fuzzy_start) * 1000
-                
-                # Determine match type and similarity
-                if total_matches > 0:
-                    match_type = 'exact'
-                    similarity = min(1.0, total_matches / len(keywords_lower))
-                elif fuzzy_total > 0:
-                    match_type = 'fuzzy'
-                    similarity = min(1.0, fuzzy_total / len(keywords_lower))
-                    matches = fuzzy_matches
-                    total_matches = fuzzy_total
-                else:
-                    match_type = 'no_match'
-                    similarity = 0.0
-                
-                # Build result with extracted data
-                name = f"CV {cv_id}"
-                if db_record:
-                    first_name = db_record.get('first_name', '')
-                    last_name = db_record.get('last_name', '')
-                    if first_name or last_name:
-                        name = f"{first_name} {last_name}".strip()
+                    # Parse the CV text to extract structured information
+                    parsed_info = self.regex_extractor.extract_cv_info(resume_text) if resume_text else {}
+                    
+                    # Get database record if available
+                    db_record = db_lookup.get(cv_id, {})
+                    
+                    # Combine searchable text from CV and all database fields
+                    searchable_text = resume_text or ""
+                    if db_record:
+                        # Include ALL available database fields for comprehensive search
+                        db_fields = [
+                            db_record.get('first_name', ''),
+                            db_record.get('last_name', ''),
+                            db_record.get('address', ''),
+                            db_record.get('phone_number', ''),
+                            db_record.get('application_role', ''),
+                            db_record.get('date_of_birth', ''),
+                            str(db_record.get('applicant_id', '')),
+                            str(db_record.get('detail_id', ''))
+                        ]
+                        db_text = ' '.join([str(field) for field in db_fields if field])
+                        searchable_text += ' ' + db_text
+                        
+                        # Also search in the category from extracted CV
+                        if category:
+                            searchable_text += ' ' + category
+                    
+                    # Setup matching
+                    matches = {}
+                    total_matches = 0
+                    keywords_lower = [k.lower() for k in keywords]
+                    searchable_text_lower = searchable_text.lower()
+                    
+                    # Track which keywords were found
+                    keywords_found = 0
+                    # Exact matching using selected algorithm
+                    exact_start = time.time()
+                    
+                    if algorithm == "AC" and len(keywords_lower) > 1:
+                        # Use Aho-Corasick efficiently for multiple keywords
+                        all_matches = self.ac_search.search_multiple(searchable_text_lower, keywords_lower)
+                        for kw in keywords_lower:
+                            count = len(all_matches.get(kw, []))
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                    else:
+                        # Individual keyword search for other algorithms
+                        for kw in keywords_lower:
+                            count = 0
+                            if algorithm == "KMP":
+                                positions = self.kmp_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "BM":
+                                positions = self.bm_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "AC":
+                                positions = self.ac_search.search_single(searchable_text_lower, kw)
+                                count = len(positions)
+                            else:
+                                count = searchable_text_lower.count(kw)
+                            
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                                
+                    exact_search_time += (time.time() - exact_start) * 1000
+                    
+                    # Fallback: fuzzy matching if no exact matches
+                    fuzzy_total = 0
+                    fuzzy_matches = {}
+                    fuzzy_keywords_found = 0
+                    if total_matches == 0:
+                        fuzzy_start = time.time()
+                        for kw in keywords_lower:
+                            keyword_fuzzy_count = 0
+                            for word in set(searchable_text_lower.split()):
+                                if len(word) > 2:
+                                    sim = self.levenshtein.similarity(kw, word)
+                                    if sim >= 0.7:
+                                        keyword_fuzzy_count += 1
+                                        fuzzy_total += 1
+                            
+                            if keyword_fuzzy_count > 0:
+                                fuzzy_matches[kw] = keyword_fuzzy_count
+                                fuzzy_keywords_found += 1
+                        fuzzy_search_time += (time.time() - fuzzy_start) * 1000
+                    
+                    # Determine match type and similarity
+                    if total_matches > 0:
+                        match_type = 'exact'
+                        keyword_coverage = keywords_found / len(keywords_lower)
+                        avg_frequency = total_matches / keywords_found if keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.7 + min(1.0, avg_frequency / 5) * 0.3
+                    elif fuzzy_total > 0:
+                        match_type = 'fuzzy'
+                        keyword_coverage = fuzzy_keywords_found / len(keywords_lower)
+                        avg_frequency = fuzzy_total / fuzzy_keywords_found if fuzzy_keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.6 + min(1.0, avg_frequency / 3) * 0.4
+                        matches = fuzzy_matches
+                        total_matches = fuzzy_total
+                    else:
+                        match_type = 'no_match'
+                        similarity = 0.0
+                    
+                    # Build result with extracted data
+                    name = f"CV {cv_id}"
+                    if db_record:
+                        first_name = db_record.get('first_name', '')
+                        last_name = db_record.get('last_name', '')
+                        if first_name or last_name:
+                            name = f"{first_name} {last_name}".strip()
+                    
                     all_results.append({
-                    'cv_data': {
-                        'cv_id': cv_id,
-                        'name': name,
-                        'first_name': db_record.get('first_name', ''),
-                        'last_name': db_record.get('last_name', ''),
-                        'address': db_record.get('address', ''),
-                        'phone': db_record.get('phone_number', ''),
-                        'application_role': db_record.get('application_role', category),
-                        'cv_path': db_record.get('cv_path', f"data/cv/{category}/{cv_id}.pdf"),
-                        'category': category,
-                        'resume_text': resume_text,
-                        'resume_html': resume_html,
-                        'parsed_info': parsed_info,
-                        # Add structured fields for easy access
-                        'emails': parsed_info.get('emails', []),
-                        'phones': parsed_info.get('phones', []),
-                        'skills': parsed_info.get('skills', []),
-                        'education': parsed_info.get('education', []),
-                        'experience': parsed_info.get('experience', []),
-                        'summary': parsed_info.get('summary', []),
-                        'names': parsed_info.get('names', [])
-                    },
-                    'matches': matches,
-                    'match_count': total_matches,
-                    'match_type': match_type,
-                    'similarity_score': similarity
-                })
+                        'cv_data': {
+                            'cv_id': cv_id,
+                            'name': name,
+                            'first_name': db_record.get('first_name', '') if db_record else '',
+                            'last_name': db_record.get('last_name', '') if db_record else '',
+                            'address': db_record.get('address', '') if db_record else '',
+                            'phone': db_record.get('phone_number', '') if db_record else '',
+                            'application_role': db_record.get('application_role', category) if db_record else category,
+                            'cv_path': db_record.get('cv_path', f"data/cv/{category}/{cv_id}.pdf") if db_record else f"data/cv/{category}/{cv_id}.pdf",
+                            'category': category,
+                            'resume_text': resume_text,
+                            'resume_html': resume_html,
+                            'parsed_info': parsed_info,
+                            # Add structured fields for easy access
+                            'emails': parsed_info.get('emails', []),
+                            'phones': parsed_info.get('phones', []),
+                            'skills': parsed_info.get('skills', []),
+                            'education': parsed_info.get('education', []),
+                            'experience': parsed_info.get('experience', []),
+                            'summary': parsed_info.get('summary', []),
+                            'names': parsed_info.get('names', [])
+                        },
+                        'matches': matches,
+                        'match_count': total_matches,
+                        'match_type': match_type,
+                        'similarity_score': similarity,
+                        'keywords_found': keywords_found if total_matches > 0 else fuzzy_keywords_found,
+                        'total_keywords': len(keywords_lower),
+                        'keyword_coverage': (keywords_found if total_matches > 0 else fuzzy_keywords_found) / len(keywords_lower)
+                    })
+            # End for extracted_cv
+
+            # Second, process database-only records
+            if not extracted_cvs and db_cvs:
+                for cv in db_cvs:
+                    cv_id = cv.get('cv_id')
+                    if not cv_id:
+                        continue
+                    
+                    # Get extracted data if available
+                    extracted_data = next((item for item in extracted_cvs if item['cv_id'] == cv_id), None)
+                    resume_text = extracted_data['resume_str'] if extracted_data else ""
+                    resume_html = extracted_data['resume_html'] if extracted_data else ""
+                    category = extracted_data['category'] if extracted_data else ""
+                    
+                    # Parse the CV text to extract structured information
+                    parsed_info = self.regex_extractor.extract_cv_info(resume_text) if resume_text else {}
+                    
+                    # Combine searchable text from CV and all database fields
+                    searchable_text = resume_text or ""
+                    if cv:
+                        # Include ALL available database fields for comprehensive search
+                        db_fields = [
+                            cv.get('first_name', ''),
+                            cv.get('last_name', ''),
+                            cv.get('address', ''),
+                            cv.get('phone_number', ''),
+                            cv.get('application_role', ''),
+                            cv.get('date_of_birth', ''),
+                            str(cv.get('applicant_id', '')),
+                            str(cv.get('detail_id', ''))
+                        ]
+                        db_text = ' '.join([str(field) for field in db_fields if field])
+                        searchable_text += ' ' + db_text
+                        
+                        # Also search in the category from extracted CV
+                        if category:
+                            searchable_text += ' ' + category
+                    
+                    # Setup matching
+                    matches = {}
+                    total_matches = 0
+                    keywords_lower = [k.lower() for k in keywords]
+                    searchable_text_lower = searchable_text.lower()
+                    
+                    # Track which keywords were found
+                    keywords_found = 0
+                    # Exact matching using selected algorithm
+                    exact_start = time.time()
+                    
+                    if algorithm == "AC" and len(keywords_lower) > 1:
+                        # Use Aho-Corasick efficiently for multiple keywords
+                        all_matches = self.ac_search.search_multiple(searchable_text_lower, keywords_lower)
+                        for kw in keywords_lower:
+                            count = len(all_matches.get(kw, []))
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                    else:
+                        # Individual keyword search for other algorithms
+                        for kw in keywords_lower:
+                            count = 0
+                            if algorithm == "KMP":
+                                positions = self.kmp_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "BM":
+                                positions = self.bm_search.search_all(searchable_text_lower, kw)
+                                count = len(positions)
+                            elif algorithm == "AC":
+                                positions = self.ac_search.search_single(searchable_text_lower, kw)
+                                count = len(positions)
+                            else:
+                                count = searchable_text_lower.count(kw)
+                            
+                            if count > 0:
+                                matches[kw] = count
+                                total_matches += count
+                                keywords_found += 1
+                                
+                    exact_search_time += (time.time() - exact_start) * 1000
+                    
+                    # Fallback: fuzzy matching if no exact matches
+                    fuzzy_total = 0
+                    fuzzy_matches = {}
+                    fuzzy_keywords_found = 0
+                    if total_matches == 0:
+                        fuzzy_start = time.time()
+                        for kw in keywords_lower:
+                            keyword_fuzzy_count = 0
+                            for word in set(searchable_text_lower.split()):
+                                if len(word) > 2:
+                                    sim = self.levenshtein.similarity(kw, word)
+                                    if sim >= 0.7:
+                                        keyword_fuzzy_count += 1
+                                        fuzzy_total += 1
+                            
+                            if keyword_fuzzy_count > 0:
+                                fuzzy_matches[kw] = keyword_fuzzy_count
+                                fuzzy_keywords_found += 1
+                        fuzzy_search_time += (time.time() - fuzzy_start) * 1000
+                    
+                    # Determine match type and similarity
+                    if total_matches > 0:
+                        match_type = 'exact'
+                        keyword_coverage = keywords_found / len(keywords_lower)
+                        avg_frequency = total_matches / keywords_found if keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.7 + min(1.0, avg_frequency / 5) * 0.3
+                    elif fuzzy_total > 0:
+                        match_type = 'fuzzy'
+                        keyword_coverage = fuzzy_keywords_found / len(keywords_lower)
+                        avg_frequency = fuzzy_total / fuzzy_keywords_found if fuzzy_keywords_found > 0 else 0
+                        similarity = keyword_coverage * 0.6 + min(1.0, avg_frequency / 3) * 0.4
+                        matches = fuzzy_matches
+                        total_matches = fuzzy_total
+                    else:
+                        match_type = 'no_match'
+                        similarity = 0.0
+                    
+                    # Build result with extracted data
+                    name = f"CV {cv_id}"
+                    if db_record:
+                        first_name = db_record.get('first_name', '')
+                        last_name = db_record.get('last_name', '')
+                        if first_name or last_name:
+                            name = f"{first_name} {last_name}".strip()
+                    
+                    all_results.append({
+                        'cv_data': {
+                            'cv_id': cv_id,
+                            'name': name,
+                            'first_name': db_record.get('first_name', '') if db_record else '',
+                            'last_name': db_record.get('last_name', '') if db_record else '',
+                            'address': db_record.get('address', '') if db_record else '',
+                            'phone': db_record.get('phone_number', '') if db_record else '',
+                            'application_role': db_record.get('application_role', category) if db_record else category,
+                            'cv_path': db_record.get('cv_path', f"data/cv/{category}/{cv_id}.pdf") if db_record else f"data/cv/{category}/{cv_id}.pdf",
+                            'category': category,
+                            'resume_text': resume_text,
+                            'resume_html': resume_html,
+                            'parsed_info': parsed_info,
+                            # Add structured fields for easy access
+                            'emails': parsed_info.get('emails', []),
+                            'phones': parsed_info.get('phones', []),
+                            'skills': parsed_info.get('skills', []),
+                            'education': parsed_info.get('education', []),
+                            'experience': parsed_info.get('experience', []),
+                            'summary': parsed_info.get('summary', []),
+                            'names': parsed_info.get('names', [])
+                        },
+                        'matches': matches,
+                        'match_count': total_matches,
+                        'match_type': match_type,
+                        'similarity_score': similarity,
+                        'keywords_found': keywords_found if total_matches > 0 else fuzzy_keywords_found,
+                        'total_keywords': len(keywords_lower),
+                        'keyword_coverage': (keywords_found if total_matches > 0 else fuzzy_keywords_found) / len(keywords_lower)
+                    })
+            # End for db_cvs
 
             search_time = (time.time() - start_time) * 1000
-
-            # Sort results by match count and similarity
-            all_results.sort(key=lambda x: (x['match_count'], x['similarity_score']), reverse=True)
+            
+            # Enhanced sorting logic for multiple keywords:
+            # 1. Keyword coverage (percentage of keywords found) - most important
+            # 2. Match type (exact > fuzzy > no match)
+            # 3. Total match count
+            # 4. Similarity score
+            def sort_key(result):
+                coverage = result['keyword_coverage']
+                match_type = result['match_type']
+                match_count = result['match_count']
+                similarity = result['similarity_score']
+                
+                # Give priority scores for match types
+                match_type_score = 3 if match_type == 'exact' else 2 if match_type == 'fuzzy' else 0
+                
+                return (coverage, match_type_score, match_count, similarity)
+            
+            all_results.sort(key=sort_key, reverse=True)
               # Apply top matches filter
             if top_matches == "all":
                 self.search_results = all_results
@@ -936,12 +1095,13 @@ class ATSFrontend:
                         ),
                         ft.Column([
                             ft.Text(cv_data['name'], size=20, weight=ft.FontWeight.BOLD),                            ft.Text(f"📍 {cv_data.get('application_role', cv_data.get('category', 'Unknown'))} • {cv_data.get('category', 'Unknown')}",
-                                   size=14, color=ft.Colors.GREY_600),
-                            ft.Row([
+                                   size=14, color=ft.Colors.GREY_600),                            ft.Row([
                                 ft.Icon(ft.Icons.TRENDING_UP, size=16,
                                        color=ft.Colors.GREEN_600 if match_count > 0 else ft.Colors.GREY_500),
-                                ft.Text(f"Jumlah Kecocokan: {match_count}",
+                                ft.Text(f"Kecocokan: {match_count}",
                                        size=14, weight=ft.FontWeight.W_500),
+                                ft.Text(f"• {result.get('keywords_found', 0)}/{result.get('total_keywords', 1)} keywords",
+                                       size=12, color=ft.Colors.BLUE_600),
                                 ft.Text(f"• {match_type.replace('_', ' ').title()}",
                                        size=12, color=ft.Colors.INDIGO_600 if match_type == 'exact'
                                        else ft.Colors.ORANGE_600 if match_type == 'fuzzy' else ft.Colors.GREY_500),
@@ -1297,79 +1457,9 @@ class ATSFrontend:
             bgcolor=color,
             action="OK",
             action_color=ft.Colors.WHITE,
-            duration=3000
-        )
+            duration=3000        )
         self.page.snack_bar.open = True
         self.page.update()
-
-    def import_sql_data(self, e):
-        # Get selected SQL file
-        sql_file = self.sql_files_dropdown.value
-        if not sql_file:
-            self.show_snackbar("⚠️ Mohon pilih file .sql yang akan diimpor!", ft.Colors.ORANGE_600)
-            return
-
-        # Confirm import action
-        def on_confirm_import(e):
-            if e.control.checked:
-                # Execute SQL import
-                try:
-                    self.db.import_sql_file(sql_file)
-                    
-                    # Create ExtractedCV table if it doesn't exist
-                    print("🔧 Ensuring ExtractedCV table exists...")
-                    self.db.create_extracted_cv_table()
-                    
-                    # Also import extracted CV data if available
-                    extracted_cv_file = "data/extracted_cvs.csv"
-                    if os.path.exists(extracted_cv_file):
-                        print(f"🔄 Also importing extracted CV data from {extracted_cv_file}...")
-                        self.db.import_extracted_cv_data(extracted_cv_file)
-                        self.show_snackbar(f"✅ Data berhasil diimpor dari {sql_file} dan extracted CV data", ft.Colors.GREEN_600)
-                    else:
-                        self.show_snackbar(f"✅ Data berhasil diimpor dari {sql_file}", ft.Colors.GREEN_600)
-                        
-                    self.refresh_sql_files()
-                except Exception as ex:
-                    self.show_snackbar(f"❌ Gagal mengimpor data: {str(ex)}", ft.Colors.RED_600)
-                    print(f"SQL import error: {ex}")
-                    print(f"Traceback: {traceback.format_exc()}")
-                finally:
-                    e.control.checked = False
-                    self.page.update()
-
-        # Show confirmation dialog
-        self.page.dialog = ft.AlertDialog(
-            title=ft.Text("Konfirmasi Impor Data SQL"),
-            content=ft.Text(f"Apakah Anda yakin ingin mengimpor data dari file ini: {sql_file}?",
-                            size=14, color=ft.Colors.GREY_800),
-            actions=[
-                ft.TextButton("Batal", on_click=lambda e: self.page.dialog.close()),
-                ft.TextButton("Ya, Impor", on_click=on_confirm_import),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-            modal=True        )
-        self.page.dialog.open = True
-        self.page.update()
-
-    def refresh_sql_files(self, e=None):
-        # List all .sql files in the data directory
-        data_dir = "data"
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-
-        sql_files = []
-        for file in os.listdir(data_dir):
-            if file.endswith('.sql'):
-                sql_files.append(os.path.join(data_dir, file))
-
-        options = [ft.dropdown.Option(f, os.path.basename(f)) for f in sql_files]
-
-        self.sql_files_dropdown.options = options
-        self.sql_files_dropdown.value = sql_files[0] if sql_files else None
-
-        if self.page:
-            self.page.update()
 
 def main(page: ft.Page):
     app = ATSFrontend()
