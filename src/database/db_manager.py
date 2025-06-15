@@ -119,8 +119,7 @@ class DatabaseManager:
     def disconnect(self) -> None:
         if self.connection and self.connection.is_connected():
             self.connection.close()
-            print("MySQL connection closed")
-
+            print("MySQL connection closed")    
     def create_tables(self) -> None:
         cursor = self.connection.cursor()
         
@@ -151,6 +150,13 @@ class DatabaseManager:
             """
         )
         
+        self.connection.commit()
+        print("Core tables (ApplicantProfile, ApplicationDetail) created successfully")
+
+    def create_extracted_cv_table(self) -> None:
+        """Create ExtractedCV table separately after seed data is loaded"""
+        cursor = self.connection.cursor()
+        
         # ExtractedCV table for fast searching
         cursor.execute(
             """
@@ -169,7 +175,7 @@ class DatabaseManager:
         )
         
         self.connection.commit()
-        print("Tables created successfully")
+        print("ExtractedCV table created successfully")
 
     def insert_applicant(self, first_name: str, last_name: str, date_of_birth: Optional[str] = None, address: str = "", phone_number: str = "") -> int:
         """
@@ -309,9 +315,16 @@ class DatabaseManager:
 
     def get_all_extracted_cvs(self) -> List[Dict]:
         """Get all extracted CV data"""
-        cursor = self.connection.cursor(dictionary=True)
-        cursor.execute("SELECT cv_id, resume_str, resume_html, category FROM ExtractedCV")
-        return cursor.fetchall()
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.execute("SELECT cv_id, resume_str, resume_html, category FROM ExtractedCV")
+            return cursor.fetchall()
+        except Error as e:
+            # Table might not exist yet
+            if "doesn't exist" in str(e) or "Table" in str(e):
+                return []
+            else:
+                raise e
 
     def import_extracted_cv_data(self, csv_file_path: str) -> None:
         """Import extracted CV data from CSV"""
@@ -350,7 +363,9 @@ class DatabaseManager:
         cursor.execute(query, params)
         return cursor.fetchall()
     
-    def get_cv_id_from_path(self, cv_path: str) -> Optional[str]:
+    def get_cv_id_from_path(self, cv_path: Optional[str]) -> Optional[str]:
         """Extract CV ID from file path"""
+        if cv_path is None or cv_path == '':
+            return None
         match = re.search(r'(\d{8})\.pdf$', cv_path)
         return match.group(1) if match else None

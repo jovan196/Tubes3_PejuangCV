@@ -20,28 +20,27 @@ from database.db_manager import DatabaseManager
 
 class ATSFrontend:
     def __init__(self):
-        # Initialize database manager using MySQL/MariaDB
+        # Initialize database manager using default settings from DatabaseManager
         print("🔗 Connecting to MySQL/MariaDB database...")
         
         try:
-            self.db = DatabaseManager(
-                host="localhost",
-                port=3306,
-                user="root", 
-                password="root",  # Temporary hardcoded password
-                database="ats_database"
-            )
+            # Use default connection parameters defined in DatabaseManager
+            self.db = DatabaseManager()
             print("✅ Successfully connected to MySQL/MariaDB database!")
         except Exception as e:
             print(f"❌ Failed to connect to MySQL/MariaDB: {e}")
             print("Please ensure:")
             print("  1. MariaDB/MySQL server is running")
-            print("  2. Root password is set to 'root' (or update the password in db_manager.py)")
+            print("  2. Connection settings are correct in src/database/db_manager.py")
             print("  3. Database server is accessible on localhost:3306")
             raise e
+        
         self.db.create_tables()
         
-        # Load extracted CV data if available
+        # Load seed data first (ApplicantProfile and ApplicationDetail)
+        self.load_seed_data()
+        
+        # Then load extracted CV data
         self.load_extracted_cv_data()
         
         self.current_page = "home"
@@ -58,18 +57,42 @@ class ATSFrontend:
         self.pdf_extractor = PDFExtractor()
         self.regex_extractor = RegexExtractor()
 
+    def load_seed_data(self):
+        """Load seed data from SQL file if tables are empty"""
+        try:
+            # Check if we already have applicant data
+            existing_applicants = self.db.get_all_applicants()
+            if not existing_applicants:
+                seed_file = "data/tubes3_seeding.sql"
+                if os.path.exists(seed_file):
+                    print("🔄 Loading seed data from data/tubes3_seeding.sql...")
+                    self.db.import_sql_file(seed_file)
+                    print(f"✅ Loaded {len(self.db.get_all_applicants())} applicants from seed data")
+                else:
+                    print("⚠️ No seed data file found at data/tubes3_seeding.sql")
+            else:
+                print(f"📊 Using existing data: {len(existing_applicants)} applicants already in database")
+        except Exception as e:
+            print(f"❌ Error loading seed data: {e}")
+
     def load_extracted_cv_data(self):
         """Load extracted CV data into database if CSV exists"""
+        # First create the ExtractedCV table (only after seed data is loaded)
+        print("🔧 Creating ExtractedCV table...")
+        self.db.create_extracted_cv_table()
+        
         csv_path = "data/extracted_cvs.csv"
         if os.path.exists(csv_path):
             # Check if data is already loaded
             existing_cvs = self.db.get_all_extracted_cvs()
             if not existing_cvs:
-                print("Loading extracted CV data...")
+                print("🔄 Loading extracted CV data...")
                 self.db.import_extracted_cv_data(csv_path)
-                print(f"Loaded {len(self.db.get_all_extracted_cvs())} extracted CVs")
+                print(f"✅ Loaded {len(self.db.get_all_extracted_cvs())} extracted CVs")
+            else:
+                print(f"📊 Using existing extracted CV data: {len(existing_cvs)} CVs already in database")
         else:
-            print("No extracted CV data found. Run extract_cv_to_csv.py first.")
+            print("⚠️ No extracted CV data found. Run extract_cv_to_csv.py first.")
 
      # Mengambil seluruh data dari database
     def load_cvs_from_db(self):
@@ -433,7 +456,7 @@ class ATSFrontend:
                                     self.sql_files_dropdown,
                                     self.refresh_sql_button
                                 ], spacing=10),
-                                ft.Text("File seed_data.sql berisi data profil aplikan yang dapat diimpor ke database MySQL",
+                                ft.Text("File tubes3_seeding.sql berisi data profil aplikan yang dapat diimpor ke database MySQL",
                                        size=12, color=ft.Colors.GREY_600, italic=True),
                                 ft.Container(
                                     content=self.import_sql_button,
@@ -1284,12 +1307,18 @@ class ATSFrontend:
         sql_file = self.sql_files_dropdown.value
         if not sql_file:
             self.show_snackbar("⚠️ Mohon pilih file .sql yang akan diimpor!", ft.Colors.ORANGE_600)
-            return        # Confirm import action
+            return
+
+        # Confirm import action
         def on_confirm_import(e):
             if e.control.checked:
                 # Execute SQL import
                 try:
                     self.db.import_sql_file(sql_file)
+                    
+                    # Create ExtractedCV table if it doesn't exist
+                    print("🔧 Ensuring ExtractedCV table exists...")
+                    self.db.create_extracted_cv_table()
                     
                     # Also import extracted CV data if available
                     extracted_cv_file = "data/extracted_cvs.csv"
